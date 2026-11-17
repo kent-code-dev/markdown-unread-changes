@@ -17,6 +17,11 @@ export interface Deletion {
 export const SIMILARITY_THRESHOLD = 0.5;
 /** 対応づけの計算量の上限（削除行数 × 追加行数）。超えたら先頭から順に対応づける */
 const MAX_PAIRING_CELLS = 40000;
+/**
+ * 対応づけの計算量の上限（文字数で見積もる）。1 行が長いと、行数が少なくても計算が重くなるため。
+ * 見積もり：min(削除行の文字数の合計 × 追加行数, 追加行の文字数の合計 × 削除行数)
+ */
+const MAX_PAIRING_WORK = 2_000_000;
 
 /**
  * 行数の違う削除行と追加行を、順序を保ったまま、似ている行どうしで対応づける。
@@ -28,12 +33,21 @@ export function pairBySimilarity(deleted: readonly string[], inserted: readonly 
   if (d === 0 || a === 0) {
     return [];
   }
+  const sequential = () => Array.from({ length: Math.min(d, a) }, (_, p) => [p, p] as const);
   if (d * a > MAX_PAIRING_CELLS) {
-    return Array.from({ length: Math.min(d, a) }, (_, p) => [p, p] as const);
+    return sequential();
+  }
+  const deletedChars = deleted.reduce((n, x) => n + x.length, 0);
+  const insertedChars = inserted.reduce((n, y) => n + y.length, 0);
+  if (Math.min(deletedChars * a, insertedChars * d) > MAX_PAIRING_WORK) {
+    return sequential();
   }
 
+  // 各行の 2-gram は 1 回だけ作る
+  const deletedProfiles = deleted.map(profile);
+  const insertedProfiles = inserted.map(profile);
   // dp[i][j] = 削除行 i 個・追加行 j 個までで得られる類似度の合計の最大値
-  const score: number[][] = deleted.map((x) => inserted.map((y) => similarity(x, y)));
+  const score: number[][] = deletedProfiles.map((x) => insertedProfiles.map((y) => profileSimilarity(x, y)));
   const dp: number[][] = Array.from({ length: d + 1 }, () => new Array<number>(a + 1).fill(0));
   for (let i = 1; i <= d; i++) {
     for (let j = 1; j <= a; j++) {
@@ -61,10 +75,27 @@ export function pairBySimilarity(deleted: readonly string[], inserted: readonly 
   return pairs.reverse();
 }
 
-/** 2 行の似ている度合い（文字の 2-gram の Dice 係数。空白は無視する） */
-export function similarity(x: string, y: string): number {
-  const a = x.replace(/\s+/g, '');
-  const b = y.replace(/\s+/g, '');
+/** 類似度の計算に使う、行の 2-gram の集まり */
+interface LineProfile {
+  /** 空白を除いた行 */
+  text: string;
+  /** 2-gram ごとの出現数 */
+  grams: Map<string, number>;
+}
+
+function profile(line: string): LineProfile {
+  const text = line.replace(/\s+/g, '');
+  const grams = new Map<string, number>();
+  for (let k = 0; k < text.length - 1; k++) {
+    const g = text.slice(k, k + 2);
+    grams.set(g, (grams.get(g) ?? 0) + 1);
+  }
+  return { text, grams };
+}
+
+function profileSimilarity(x: LineProfile, y: LineProfile): number {
+  const a = x.text;
+  const b = y.text;
   if (a === b) {
     return 1;
   }
@@ -74,21 +105,18 @@ export function similarity(x: string, y: string): number {
   if (a.length === 1 || b.length === 1) {
     return a.includes(b) || b.includes(a) ? 2 / (a.length + b.length) : 0;
   }
-  const grams = new Map<string, number>();
-  for (let k = 0; k < a.length - 1; k++) {
-    const g = a.slice(k, k + 2);
-    grams.set(g, (grams.get(g) ?? 0) + 1);
-  }
+  // 種類の少ないほうを回す
+  const [small, large] = x.grams.size <= y.grams.size ? [x.grams, y.grams] : [y.grams, x.grams];
   let common = 0;
-  for (let k = 0; k < b.length - 1; k++) {
-    const g = b.slice(k, k + 2);
-    const n = grams.get(g) ?? 0;
-    if (n > 0) {
-      common++;
-      grams.set(g, n - 1);
-    }
+  for (const [g, n] of small) {
+    common += Math.min(n, large.get(g) ?? 0);
   }
   return (2 * common) / (a.length - 1 + (b.length - 1));
+}
+
+/** 2 行の似ている度合い（文字の 2-gram の Dice 係数。空白は無視する） */
+export function similarity(x: string, y: string): number {
+  return profileSimilarity(profile(x), profile(y));
 }
 
 /** 連続した変更のまとまり（ステータスバーで 1 件と数える単位） */

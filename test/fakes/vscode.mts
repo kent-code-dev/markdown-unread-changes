@@ -42,7 +42,9 @@ export class Uri {
   }
 }
 
-export class FileSystemError extends Error {}
+export class FileSystemError extends Error {
+  readonly code = 'FileNotFound';
+}
 
 export const StatusBarAlignment = { Left: 1, Right: 2 };
 export class TabInputWebview {
@@ -178,6 +180,8 @@ export const workspace = {
   onDidCloseTextDocument: noopEvent,
   onDidChangeConfiguration: noopEvent,
   onDidGrantWorkspaceTrust: noopEvent,
+  onWillRenameFiles: noopEvent,
+  onDidRenameFiles: noopEvent,
 };
 
 export const window = {

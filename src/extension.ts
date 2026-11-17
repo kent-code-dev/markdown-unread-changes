@@ -113,6 +113,7 @@ export function activate(context: vscode.ExtensionContext) {
   };
 }
 
+/** 終了時に、未保存の記録（index.json）の保存を待つ */
 export function deactivate(): Thenable<void> | undefined {
-  return undefined;
+  return tracker?.flush().catch((err: unknown) => console.error('[markdown-unread-changes] flush failed', err));
 }

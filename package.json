@@ -1,11 +1,15 @@
 {
   "name": "markdown-unread-changes",
   "displayName": "Markdown Unread Changes",
-  "description": "Markdown ファイルの、前回読んだときからの変更箇所を、VS Code 標準の Markdown プレビューで色付けします。インターネットには一切接続しません。",
+  "description": "Markdown ファイルの、前回読んだときからの変更箇所を、VS Code 標準の Markdown プレビューで色付けします。拡張機能自体はインターネットに接続しません。",
   "version": "0.0.1",
   "publisher": "kent-code-dev",
   "icon": "media/icon.png",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kent-code-dev/markdown-unread-changes"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -35,7 +39,8 @@
         "markdownUnreadChanges.maxFileSize",
         "markdownUnreadChanges.openUnreadFileIn"
       ]
-    }
+    },
+    "virtualWorkspaces": false
   },
   "contributes": {
     "markdown.markdownItPlugins": true,
@@ -126,8 +131,9 @@
     "test": "node --import ./test/setup/register.mjs --test \"test/**/*.test.mts\"",
     "check": "npm run typecheck && npm run lint && npm test && npm run check:deps",
     "check:deps": "npm ls --omit=dev --all",
-    "package": "vsce package --allow-missing-repository",
-    "vscode:prepublish": "npm run check && node esbuild.mjs --production"
+    "check:offline": "node scripts/check-offline.mjs",
+    "package": "vsce package",
+    "vscode:prepublish": "npm run check && node esbuild.mjs --production && npm run check:offline"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",

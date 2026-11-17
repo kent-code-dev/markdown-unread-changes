@@ -121,6 +121,28 @@ export class SnapshotStore {
     }
   }
 
+  /**
+   * 記録を新しいキーに付け替える（ファイルの名前変更）。既読の状態とスナップショットを引き継ぐ。
+   * スナップショットのファイル名はキーから決まるので、新しいキーの名前で保存し直す
+   * （古いキーで後から別のファイルが作られたときに、ファイル名がぶつからないように）
+   */
+  async rename(oldKey: string, newKey: string): Promise<boolean> {
+    const entry = this.index.files[oldKey];
+    if (!entry || oldKey === newKey) {
+      return false;
+    }
+    const text = await this.readSnapshot(oldKey);
+    if (text === undefined) {
+      await this.remove(oldKey);
+      return false;
+    }
+    const { mtime, size, unread, count } = entry;
+    await this.remove(newKey);
+    await this.writeSnapshot(newKey, text, { mtime, size, unread, count });
+    await this.remove(oldKey);
+    return true;
+  }
+
   /** 開いていないファイルのスナップショットをメモリから外す */
   evict(key: string): void {
     this.cache.delete(key);

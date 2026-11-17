@@ -121,3 +121,81 @@ test('変更した段落の途中で消えた行は、変更前のテキスト�
   assert.match(html, /data-muc-old="1行目はそのまま\n2行目は消える\n3行目を書き換える"/);
   assert.match(html, /muc-deleted">2行目は消える</);
 });
+
+// ---- エスケープ（変更前のテキストや削除された内容が、HTML として解釈されないこと） ----
+
+/** 出力に現れる HTML の要素名と属性名をすべて集める（属性値から抜け出していれば、余計な属性名が出てくる） */
+function tagsAndAttributes(html: string): { tags: Set<string>; attributes: Set<string> } {
+  const tags = new Set<string>();
+  const attributes = new Set<string>();
+  for (const [, name, rest] of html.matchAll(/<([a-zA-Z][a-zA-Z0-9]*)([^>]*)>/g)) {
+    tags.add(name.toLowerCase());
+    for (const [, attr] of rest.matchAll(/([^\s=]+)(?:="[^"]*")?/g)) {
+      attributes.add(attr.toLowerCase());
+    }
+  }
+  return { tags, attributes };
+}
+
+const SAFE_TAGS = new Set(['div', 'p', 'h1', 'h2', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'code', 'pre']);
+const SAFE_ATTRIBUTES = new Set(['class', 'data-muc-old', 'style']);
+
+function assertNoInjectedHtml(html: string): void {
+  const { tags, attributes } = tagsAndAttributes(html);
+  for (const tag of tags) {
+    assert.ok(SAFE_TAGS.has(tag), `想定外の要素 <${tag}> が出力された：${html}`);
+  }
+  for (const attr of attributes) {
+    assert.ok(SAFE_ATTRIBUTES.has(attr), `想定外の属性 ${attr} が出力された：${html}`);
+  }
+}
+
+const DANGEROUS = `<img src=x onerror="alert(1)"> <a href="javascript:alert(2)">x</a> " onmouseover='alert(3)' & >`;
+
+test('変更前のテキスト（data-muc-old）の " > & \' はエスケープされ、属性から抜け出さない', () => {
+  const html = render(`段落 "a" <b> & 'c'`, '段落を変更');
+  assert.match(html, /data-muc-old="段落 &quot;a&quot; &lt;b&gt; &amp; &#39;c&#39;"/);
+  assertNoInjectedHtml(html);
+});
+
+test('変更した段落の変更前に、画像やリンクの HTML があっても要素にならない', () => {
+  const html = render(DANGEROUS, '安全な段落');
+  assert.match(html, /muc-modified/);
+  assertNoInjectedHtml(html);
+});
+
+test('削除した段落に、画像やリンクの HTML があっても要素にならない', () => {
+  const html = render(`段落1\n\n${DANGEROUS}\n\n段落3`, '段落1\n\n段落3');
+  assert.match(html, /muc-deleted/);
+  assertNoInjectedHtml(html);
+});
+
+test('表の行の変更前（属性で入れる data-muc-old）も、属性から抜け出さない', () => {
+  const oldText = ['| a | b |', '|---|---|', `| x" onmouseover="alert(1) | <img src=x onerror=alert(2)> |`].join('\n');
+  const newText = ['| a | b |', '|---|---|', '| x | y |'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /<tr class="muc-row muc-modified" data-muc-old="[^"]*&quot; onmouseover=&quot;alert\(1\)[^"]*&lt;img/);
+  assertNoInjectedHtml(html);
+});
+
+test('削除された表の行の中身は、エスケープしてセルに入れる', () => {
+  const oldText = ['| a | b |', '|---|---|', '| 1 | 2 |', `| <img src=x onerror=alert(1)> | <a href="javascript:x">y</a> |`, '| 5 | 6 |'].join('\n');
+  const newText = ['| a | b |', '|---|---|', '| 1 | 2 |', '| 5 | 6 |'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /<tr class="muc-row muc-deleted"><td>&lt;img src=x onerror=alert\(1\)&gt;<\/td>/);
+  assertNoInjectedHtml(html);
+});
+
+test('構造が変わった表の変更前（muc-table-changed）も、エスケープする', () => {
+  const oldText = ['| a | b |', '|---|---|', `| <script>alert(1)</script> | " onclick="x |`].join('\n');
+  const newText = ['| a | b | c |', '|---|---|---|', '| 1 | 2 | 3 |'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /<div class="muc-table-changed" data-muc-old="[^"]*&lt;script&gt;/);
+  assertNoInjectedHtml(html);
+});
+
+test('リストの中の削除も、エスケープして <li> として出す', () => {
+  const html = render(`- a\n- ${DANGEROUS}\n- c`, '- a\n- c');
+  assert.match(html, /<li class="muc-block muc-deleted muc-deleted-item">- &lt;img/);
+  assertNoInjectedHtml(html);
+});

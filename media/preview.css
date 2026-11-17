@@ -40,6 +40,13 @@
   font-size: 0.95em;
 }
 
+/* リストの中の削除（削除された行の「- 」などの記号をそのまま表示するので、行頭記号は付けない） */
+li.muc-deleted-item {
+  list-style: none;
+  /* 番号付きリストの番号を進めない */
+  counter-increment: list-item 0;
+}
+
 /* 表の行 */
 tr.muc-row.muc-modified > td,
 tr.muc-row.muc-modified > th {

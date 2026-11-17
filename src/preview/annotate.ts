@@ -95,7 +95,7 @@ export function annotateTokens(
     const token = tokens[i];
     if (token.map && token.nesting !== -1 && !NO_INSERT_BEFORE.has(token.type)) {
       while (next < pending.length && pending[next].anchor <= token.map[0]) {
-        out.push(raw(token.type === 'tr_open' ? deletedRowHtml(pending[next]) : deletedBlockHtml(pending[next])));
+        out.push(raw(deletedHtmlBefore(token.type, pending[next])));
         next++;
       }
     }
@@ -278,6 +278,24 @@ function withRowColoring(token: Token, TokenCtor: TokenClass, coloring: Coloring
     copy.attrSet('data-muc-old', coloring.oldText); // 属性値は markdown-it がエスケープする
   }
   return copy;
+}
+
+/**
+ * 削除された内容を、直後のトークンの親要素の中で正しい形で出す
+ * （<ul> / <ol> の直下は <li>、<tbody> などの直下は <tr> でなければならない）
+ */
+function deletedHtmlBefore(nextType: string, d: Deletion): string {
+  if (nextType === 'tr_open') {
+    return deletedRowHtml(d);
+  }
+  if (nextType === 'list_item_open') {
+    return deletedListItemHtml(d);
+  }
+  return deletedBlockHtml(d);
+}
+
+function deletedListItemHtml(d: Deletion): string {
+  return `<li class="muc-block muc-deleted muc-deleted-item">${escapeHtml(d.oldLines.join('\n'))}</li>`;
 }
 
 function deletedBlockHtml(d: Deletion): string {

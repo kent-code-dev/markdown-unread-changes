@@ -1,0 +1,188 @@
+# 公開前コードレビュー（2026-11-17）
+
+対象：`main`（a67c7c1）の全ソース・テスト・設定と、手元の `markdown-unread-changes-0.0.1.vsix`。
+このノートは指摘をまとめたもの。2026-11-17 に、下の「確認済み」にある指摘を直した。
+
+## 論点一覧
+### 未確認（各指摘を直すか・見送るか）
+- なし
+
+### 後回し（決定済み）
+- 低：L2、L3、L8、L10
+- テスト：T1〜T4、T6〜T8（M1〜M7・L6 などの今回の修正のテストもここに含む。M6 の「テストの罠」と CI も後回し）
+
+### 確認済み
+- 個人情報：問題なし（下の「問題なしと確認したもの」を参照）
+- プレビューのエスケープ：スクリプトが実行される経路はない（同上）
+- Lint の通信禁止のルールの対象：.vsix に入る src/ と media/ だけにする（テストとビルド用のスクリプトは対象外）
+- M1：差分のキャッシュはエディタで開いているファイルだけにした。開いていないファイルのスナップショットも、確認のたびにメモリから外す（閉じたときは未読でも外す）
+- M2：削除の通知の URI の下にある記録もまとめて消す。既読にするときファイルが無ければ、記録を消して未読一覧から外す。変更の確認中にファイルが消えていた場合も同様
+- M3：VS Code の中での名前変更（`onWillRenameFiles` / `onDidRenameFiles`）では、記録とスナップショットを新しい名前に付け替える。フォルダの名前変更にも対応。名前変更の途中に届く削除・作成の通知は無視する。VS Code の外での名前変更は「削除と新しいファイル」として扱うと README に書いた
+- M4：使えない glob は無視して警告を出す（`isValidGlob`）。設定の値の型が違う場合も初期値を使う。取り込み直しの失敗は捕捉する
+- M5：各行の 2-gram は 1 回だけ作る。対応づけの上限を、行数に加えて文字数（見積もり 200 万）でも判定する。1 行 5000 文字 × 200 行の書き換えで約 80ms
+- M6：Lint に `globalThis.fetch` などのプロパティ、動的 import、`createRequire`、`vscode.open`、URL の文字列、`innerHTML`・`src`・`href` などを追加。`media/preview.js` で作る要素を div・tr・td に限定。ビルド後の `dist/extension.cjs` と `media/` の JS・CSS を調べる `scripts/check-offline.mjs` を追加し、`vscode:prepublish` で実行する（URL・CSS の `url()`・`@import`・通信の API）
+- M7：リストの中では、削除された内容を `<li class="muc-deleted-item">` として出す（行頭記号なし、番号付きリストの番号を進めない）
+- L1：`deactivate` で index.json の保存を待つ
+- L4：README の「制限事項」に「UTF-8 のみ対応」と書いて割り切る
+- L5：取り込みの途中でファイルが消えていた（stat・読み込みが FileNotFound）ら、記録を消す。削除の通知の処理と順番が前後しても記録が残らない
+- L6：設定の変更や信頼による取り込み直しで新しく対象になったファイルは「既読」として取り込む。起動時に見つかった新しいファイルは、これまでどおり全体を追加として扱う
+- L7：README の「制限事項」に保存する容量の目安とシンボリックリンクの扱いを書いて割り切る
+- L9：`capabilities.virtualWorkspaces: false` を宣言し、取り込みでも scheme（file / vscode-remote）を確認する
+- L11：README の「プライバシー」を「拡張機能自体はインターネットに接続しない。ノート内の外部画像は VS Code の設定（`markdown.preview.security`）に従う」と書き分けた。説明文（README・package.json）の表現も「拡張機能自体はインターネットに接続しません」に統一
+- L12：CHANGELOG に最初の版の内容を書いた。`package.json` に `repository` を追加し、`--allow-missing-repository` を外した
+- T5：エスケープのテストを追加（`test/annotate.test.mts`。`data-muc-old` の `" > & '`、表の行の属性、削除された表の行、構造が変わった表、画像・リンクの HTML、リストの中の削除）。エスケープを壊すと失敗することも確かめた
+
+---
+
+## 中
+
+### M1. 差分のキャッシュが際限なく増え、ファイルの全文を持ち続ける
+- 該当：`src/tracker/tracker.ts:351-359`（`diff()`）、`:57-63`（消すのはドキュメントを閉じたときだけ）
+- 理由：起動時の取り込み（`scanFile` → `updateUnread`）やディスクの変更通知でも `diffCache` に旧・新の全文と差分結果を入れる。消すのは「エディタで開いていたファイルを閉じたとき」だけなので、開いたことのないファイルの分は残り続ける。`store.evict()` でスナップショットのキャッシュを外しても、`diffCache` 側が同じ全文を保持しているため意味がない。
+- 起きること：`git pull` やブランチ切り替えで多数のノートが変わると、上限（2000 件 × 1MB）まで拡張ホストのメモリに全文が載る。
+- 方向：プレビュー・ステータスバー用（開いているファイル）だけキャッシュする、または件数に上限を設ける。
+
+### M2. フォルダの削除・名前変更で、存在しないファイルが未読として残る
+- 該当：`src/tracker/tracker.ts:189-199`（`onDidDelete`）
+- 理由：ファイル監視の削除通知は、フォルダを消したときにフォルダの URI 1 件だけで届くことがある。キーがファイル単位なので一致せず、中のファイルの記録が消えない。次に全体を取り込み直すまで残る。
+- 起きること：未読一覧に存在しないファイルが出る。選ぶと開けずにエラー。`既読にする` は `readFile` が失敗して例外（`markRead` 内で捕捉していないので、コマンドのエラーとして表示される。`:438-450`）。`すべて既読にする` では毎回失敗してログに出るだけで、未読のまま残る。
+- 方向：削除通知の URI を接頭辞として、その下のキーもまとめて消す。`markRead` で対象が無ければ記録を消す。
+
+### M3. ファイルの名前変更で既読の状態が失われ、全体が「追加（緑）」になる
+- 該当：`src/tracker/tracker.ts:186-199`、`:275-278`
+- 理由：名前変更は「削除＋作成」として届くため、旧名の記録は消え、新名は空のスナップショットから始まる。`workspace.onDidRenameFiles` も使っていない。
+- 起きること：ノートの名前を変えただけで、全文が緑・未読になる。フォルダごと移動すると全ファイルがそうなる。
+- 方向：`onDidRenameFiles`（VS Code 内での操作）でキーを付け替える。外部での名前変更は、直前に消えた記録と内容が一致すれば引き継ぐ、など。仕様として割り切るなら README に書く。
+
+### M4. 設定の glob の書き間違いで、拡張全体が起動しなくなる
+- 該当：`src/util/glob.ts:4-45`（`globToRegExp`）、`src/tracker/tracker.ts:25-26`（コンストラクタで生成）、`:88-89`
+- 理由：`{` の閉じ忘れ（`"docs/{a,b"`）や逆順の範囲（`"[z-a].md"`）で、生成した正規表現が `SyntaxError` になる。`Tracker` のフィールド初期化で投げるので `activate()` が失敗し、`extendMarkdownIt` も返らない（プレビューの色付けも全部止まる）。設定変更時の `rescan()` では未処理の Promise 拒否になる。
+- 影響範囲：信頼済みフォルダでは、リポジトリに入った `.vscode/settings.json` だけで起きる。制限モードではフォルダ側の値を無視するので、ユーザー設定の書き間違いだけ。
+- 方向：glob ごとに try/catch して無効なものは捨て、警告を出す。
+
+### M5. 似ている行の対応づけが、長い行で拡張ホストを長く止める
+- 該当：`src/diff/lineDiff.ts:31-36`（`pairBySimilarity`）、`:65-92`（`similarity`）
+- 理由：上限は「削除行数 × 追加行数 ≤ 40000」だけで、行の長さを見ていない。1 行が長いノート（表、改行のない段落、埋め込みデータなど）で、200 行 × 200 行の書き換えがあると、長い文字列の 2-gram の Map 作成を 4 万回行う。
+- 起きること：プレビューの描画（`getDiffForRender`、同期処理）や編集のたびに、数秒単位で拡張ホストが止まりうる。ほかの拡張も巻き込む。
+- 方向：上限を「文字数の合計」でも判定する。長すぎる行は類似度を計算しない。
+
+### M6. 「通信しない」を守る仕組みに抜け道がある（現状のコードは通信していない）
+- 該当：`eslint.config.mjs:5-44`
+- 理由：今のコードには通信する箇所はない（下で確認済み）。ただ、Lint のルールでは次を検出できない。
+  - `globalThis.fetch(...)`、`window.fetch(...)`、`window.XMLHttpRequest`（`no-restricted-globals` は素の識別子だけを見る）
+  - 動的な `import('node:https')`、`module.createRequire(...)('https')`
+  - `vscode.commands.executeCommand('vscode.open', Uri.parse('https://...'))`（外部 URL を開く。`openExternal` だけ禁止している）
+  - `media/preview.js` で `img` / `link` / `iframe` 要素を作って `src` / `href` に URL を入れる。プレビューの CSP は https の画像を許可しているので、これで通信できてしまう
+  - `media/preview.css` の `url()` / `@import`（Lint の対象外）
+- あわせて、ノートの計画にある「3. .vsix の検査」「4. テストの罠」「6. CI」がまだ入っていない（`docs/notes/note-diff-lens.md:58-75`）。今回は手で .vsix を展開して確認したが、仕組みにはなっていない。
+- 方向：`no-restricted-properties` で `*.fetch` などを禁止。`ImportExpression` を禁止。`vscode.open` の文字列を禁止。`preview.js` の `createElement` を `div` だけに絞る。ビルド後の `dist/extension.cjs` と `media/*` を URL で検索するスクリプトを `check` に入れる。
+
+### M7. 削除された内容の赤いブロックが、リストの中に不正な位置で入る
+- 該当：`src/preview/annotate.ts:96-101`
+- 理由：削除ブロックの `<div>` は、`map` を持つ開始トークンなら何の前にでも入る。`list_item_open` の前に入ると `<ul><div>…</div><li>` になる。`thead` / `tbody` は除外しているが、リストは除外していない。
+- 起きること：HTML として不正なので、描画やサニタイズで位置がずれたり、リストの番号・行頭記号の表示が崩れたりする（スクリプトが実行されることはない）。`test/annotate.test.mts:101` は出力に赤があることだけを見ていて、位置は確かめていない。
+- 方向：リストの中では `<li class="muc-deleted">` として出す、またはリストの前後に出す。
+
+---
+
+## 低
+
+### L1. 終了時に index.json の保存を待っていない
+- 該当：`src/tracker/tracker.ts:80`（`void this.store.flush()`）、`src/extension.ts:116-118`（`deactivate` が何も返さない）
+- 理由：保存は 500ms 遅らせているので、直前の既読操作などが index.json に残らないことがある。次回起動時に内容を比べ直すので実害は小さいが、未読の記録がずれる可能性がある。
+- 方向：`deactivate` で `flush()` の Promise を返す。
+
+### L2. 編集中のファイルにサイズの上限がかからない
+- 該当：`src/tracker/tracker.ts:316-337`（`onDocumentEdited`）、`:362-377`（`getDiffForRender`）
+- 理由：上限の確認はディスクの `stat` だけ。追跡中のファイルに大量に貼り付けると、保存するまで上限を超えた本文で差分を計算し続ける（描画のたびに同期処理）。
+- 関連：`:299` は文字数（`getText().length`）とバイト数（`maxFileSizeBytes`）を比べていて、単位が合っていない。
+
+### L3. Myers 法の作業領域が編集距離の 2 乗で増える
+- 該当：`src/diff/myers.ts:62-96`
+- 理由：`trace` に各ステップの配列を保存するため、上限 4000 では約 1600 万要素（約 64MB）になる。ほぼ全文を書き換えたときに一時的にメモリを使う。上限を超えたときは「全体を置き換え」になり、色付けも全面黄色になる。
+
+### L4. UTF-8 以外のノートで、誤って未読になる
+- 該当：`src/tracker/tracker.ts:20`、`:468`、`src/tracker/snapshotStore.ts:27`
+- 理由：ディスクからは常に UTF-8 として読むが、開いているファイルは VS Code が設定（`files.encoding` や自動判定）で読んだ内容を使う。Shift_JIS などのノートでは、開いた・閉じただけで内容が違うと判定され、変更前のテキストも文字化けする。
+- 方向：割り切るなら README に「UTF-8 のみ対応」と書く。
+
+### L5. 取り込み中に消えたファイルの記録が残る
+- 該当：`src/tracker/tracker.ts:139-144`、`:189-191`
+- 理由：取り込みの途中で消えたファイルは、`findFiles` の結果（`present`）に含まれているので、最後の掃除で消されない。削除通知の処理と取り込みの順番によっては記録が残り、M2 と同じ症状になる。
+
+### L6. 対象範囲が広がると、既存のファイルが全部「未読（全体が緑）」になる
+- 該当：`src/tracker/tracker.ts:221-227`、`:70`
+- 理由：初回以外に見つかったファイルは、空のスナップショットから始める。`include` を広げた、`exclude` を外した、制限モードのフォルダを信頼してフォルダ側の設定が効いた、などのときに、前からあったファイルまで全部未読になる。
+- 方向：設定変更・信頼による取り込み直しで新たに対象になったファイルは「既読」として取り込む。
+
+### L7. 制限モードのフォルダでも、全ノートの複製を保存する（容量・シンボリックリンク）
+- 該当：`src/tracker/tracker.ts:92-96`、`src/tracker/snapshotStore.ts:101-107`
+- 理由：信頼していないフォルダでも、起動しただけで最大 2000 件 × 1MB（約 2GB）を読み、拡張の保存先に複製する。`findFiles` は初期設定でシンボリックリンクをたどるので、ワークスペースの外のファイルも読み込みうる。外部に送ることはないので情報漏えいにはならないが、ディスクを使う。ワークスペースを消しても複製は残る（VS Code が掃除するまで）。
+- 方向：README に保存量の目安を書く。制限モードでは上限を下げる、または開いたファイルだけを追跡する、なども検討できる。
+
+### L8. HTML ブロックを色付けの `<div>` で包むと、構造が崩れることがある
+- 該当：`src/preview/annotate.ts:41`（`html_block` を 1 ブロックとして包む）、`:117-126`
+- 理由：`<details>` を開く行と閉じる行が別の HTML ブロックになっているノートで、片方だけが変わると、`<div>…</div>` が `<details>` の内外にまたがる。表示が崩れるだけで、実行される心配はない（VS Code 側のサニタイズとエスケープの両方で防がれている）。
+
+### L9. 仮想ワークスペースの URI も取り込んでしまう
+- 該当：`src/tracker/tracker.ts:206-239`（`scanFile` は `isTarget` の scheme 判定を通らない）、`package.json`（`capabilities.virtualWorkspaces` の宣言がない）
+- 理由：`isTarget` は `file` と `vscode-remote` だけを対象にしているが、取り込みでは確認していない。GitHub の仮想ワークスペースなどで、`findFiles` が返した別の scheme のファイルを読み込み・複製する。
+- 方向：`virtualWorkspaces: false` を宣言するか、`scanFile` でも scheme を確認する。
+
+### L10. 複数の include をまとめるときに `{}` が入れ子になる
+- 該当：`src/util/glob.ts:61-66`（`combineGlobs`）
+- 理由：`["**/*.{md,markdown}", "docs/**"]` のように `{}` を含む glob が複数あると `{**/*.{md,markdown},docs/**}` になる。VS Code の glob は `{}` の入れ子に対応していないので、`findFiles` とファイル監視が想定どおりに動かない（自作の照合 `GlobMatcher` とも結果が食い違う）。
+
+### L11. README の「外部からファイルを読み込むこともありません」が誤解を招く
+- 該当：`README.md` の「プライバシー」節
+- 理由：拡張自体は読み込まないが、ノートに書かれた外部画像（`![](https://…)`）は VS Code 標準のプレビューが読み込む。変更後の本文は通常どおり描画されるため。なお、削除された内容と変更前のテキストはエスケープされた文字列として表示されるので、そこに含まれる画像は読み込まれない。
+- 方向：「拡張機能が追加で通信することはない。ノート内の外部画像の読み込みは VS Code の設定（`markdown.preview.security`）に従う」と書き分ける。
+
+### L12. 公開前の細かい点
+- `CHANGELOG.md` が「0.0.1（未公開）／開発中の最初の版」のまま。
+- GitHub のリポジトリがあるのに `package.json` に `repository` がなく、`package` スクリプトで `--allow-missing-repository` を付けている。Marketplace の画面にリポジトリへのリンクが出ない（公開したくないなら現状のままでよい）。
+
+---
+
+## テストが足りない箇所
+
+- T1. `SnapshotStore`：テストがない。index.json が壊れている・バージョン違い、スナップショットのファイルが無い、`remove` の後の再作成、保存の遅延（`flush`）。
+- T2. ファイル監視：削除・作成・名前変更（M2・M3・L5）。フォルダごとの削除。取り込み中の削除。
+- T3. 上限：`maxFiles` を超えたときの縮退モード（開いたファイルだけの追跡、再取り込み）。`maxFileSize` を超えたファイル、超えるように変わったファイル（L2）。
+- T4. 既読操作：`markRead`（未保存の編集を含む）、`markAllRead`、対象ファイルが無いとき（M2）、エディタでの編集の反映（`onDocumentEdited`）。
+- T5. エスケープ：今のテストは削除ブロックの `<script>` だけ（`test/annotate.test.mts:35-38`）。次が無い。
+  - `data-muc-old` の中身に `"` `>` `&` `'` があるとき（属性から抜け出さないこと）
+  - 表の行の `data-muc-old`（`attrSet` 経由。markdown-it のエスケープに頼っている箇所）
+  - 削除された表の行（`deletedRowHtml`）、構造が変わった表の変更前（`muc-table-changed`）
+  - `<img src=x onerror=…>` や `<a href="javascript:…">` を含む行の削除・変更
+- T6. `media/preview.js`：テストがない。`textContent` で入れていること、表の行の展開、リンクのクリックを邪魔しないこと。jsdom などで最低限の確認があるとよい。
+- T7. 差分の上限の経路：Myers の編集距離の上限超え（`myers.ts:97`）、`pairBySimilarity` の上限超え（`lineDiff.ts:31`）、長い行（M5）。大きなファイルでの処理時間の目安。
+- T8. その他：無効な glob（M4）と `{}` の入れ子（L10）、リストの中の削除の位置（M7）、制限モードからの信頼（`onDidGrantWorkspaceTrust`）、`openFile` / `statusBar`、CR だけの改行と改行コードの混在、オフラインの罠テスト（M6・ノートの計画 4）。
+
+---
+
+## 問題なしと確認したもの
+
+### 通信
+- `src/` と `media/` に、`http(s)://`、`fetch`、`XMLHttpRequest`、`WebSocket`、`require`、動的 `import` などの通信につながるコードはない。
+- 実行時の依存はなし（`dependencies` が無く、`markdown-it` は型だけの import）。
+- 手元の .vsix を展開して確認：入っているのは `dist/extension.cjs`、`media/`（icon・css・js）、`package.json`、README、CHANGELOG、LICENSE だけ。中の URL は vsixmanifest の XML スキーマ（schemas.microsoft.com）だけ。
+- `markdown.previewStyles` / `previewScripts` は拡張内の相対パスだけ。
+
+### エスケープ（スクリプトが実行されないか）
+- 削除された内容・表のラベル・変更前のテキスト（`data-muc-old`）は、すべて `escapeHtml`（`& < > " '`）を通している（`annotate.ts:107-108`、`:118`、`:283-295`）。
+- 表の行の `data-muc-old` は `attrSet` で入れ、markdown-it の属性の描画でエスケープされる（`annotate.ts:278`）。
+- プレビュー側では、変更前のテキストを `textContent` で入れているので、HTML として解釈されない（`preview.js:24`、`:63`）。
+- 変更後の本文に書かれた HTML は、拡張ではなく VS Code 標準のプレビューの扱い（サニタイズと CSP）に従う。拡張がそれを弱めることはない。
+
+### 制限モード
+- `capabilities.untrustedWorkspaces.restrictedConfigurations` の宣言と、コード側（`config.ts:45-51`）の両方で、フォルダ側の設定を無視している。`files.exclude` も同様。テストあり。
+
+### 改行コード
+- CRLF / LF / CR と先頭の BOM は変更として扱わない（`lineDiff.ts:116-118`）。テストあり。
+
+### 個人情報
+- ソース・設定・テスト・.vsix に、個人の名前・ローカルのパス・メールアドレスは無い。
+- 出てくるのは発行者 ID と LICENSE の `kent-code-dev` だけで、ノートで意図どおりと確認済み（`note-diff-lens.md:9`）。
+- コミットの作成者のメールは GitHub の noreply アドレス。
+- `CLAUDE.md` と `docs/` は `.vscodeignore` で .vsix から外れている。

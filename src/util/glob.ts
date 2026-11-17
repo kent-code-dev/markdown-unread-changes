@@ -44,11 +44,22 @@ export function globToRegExp(glob: string): RegExp {
   return new RegExp('^' + re + '$', process.platform === 'win32' ? 'i' : '');
 }
 
+/** 照合に使える glob か（{ の閉じ忘れや逆順の範囲 [z-a] などは使えない） */
+export function isValidGlob(glob: string): boolean {
+  try {
+    globToRegExp(glob);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export class GlobMatcher {
   private readonly patterns: RegExp[];
 
+  /** 使えない glob は無視する（設定の書き間違いで拡張全体が止まらないように） */
   constructor(globs: readonly string[]) {
-    this.patterns = globs.map(globToRegExp);
+    this.patterns = globs.filter(isValidGlob).map(globToRegExp);
   }
 
   /** relativePath は「/」区切りのワークスペース相対パス */

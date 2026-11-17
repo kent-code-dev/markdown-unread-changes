@@ -17,7 +17,23 @@ export interface ChangeSummary {
 
 /** 初回の取り込みで一度に処理するファイル数 */
 const SCAN_CHUNK = 40;
+/** 名前変更の予定（onWillRenameFiles）を、完了の通知が来ないときに捨てるまでの時間 */
+const RENAME_TIMEOUT_MS = 30_000;
 const decoder = new TextDecoder();
+
+/** 追跡するファイルの scheme（仮想ワークスペースのファイルなどは扱わない） */
+function isSupportedScheme(uri: vscode.Uri): boolean {
+  return uri.scheme === 'file' || uri.scheme === 'vscode-remote';
+}
+
+/** key そのもの、または key のフォルダの下にあるか（URI 文字列で比べる） */
+function isSameOrUnder(key: string, folderKey: string): boolean {
+  return key === folderKey || key.startsWith(folderKey.endsWith('/') ? folderKey : folderKey + '/');
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof vscode.FileSystemError && err.code === 'FileNotFound';
+}
 
 export class Tracker implements RenderDiffProvider, vscode.Disposable {
   private readonly store: SnapshotStore;
@@ -40,6 +56,14 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
   private readonly running = new Set<Promise<unknown>>();
   /** 取り込み中に届いた変更通知。取り込みが終わってから処理する */
   private readonly deferred = new Map<string, vscode.Uri>();
+  /**
+   * VS Code の中で行う名前変更の予定（新しい URI 文字列 → 古い URI 文字列）。
+   * 名前変更は「削除＋作成」の通知としても届くため、完了（onDidRenameFiles）までは両方の通知を無視し、
+   * 完了したら記録を新しい名前に付け替える
+   */
+  private readonly pendingRenames = new Map<string, string>();
+  /** 前回警告した、使えない glob（同じ警告を繰り返さないため） */
+  private warnedInvalidGlobs = '';
 
   /** 状態が変わったときに発火する。snapshotChanged はプレビューの再描画が必要なとき true */
   readonly onDidChange = this.onDidChangeEmitter.event;
@@ -55,21 +79,22 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
       vscode.workspace.onDidChangeTextDocument((e) => this.onDocumentEdited(e.document)),
       vscode.workspace.onDidOpenTextDocument((doc) => void this.onDocumentOpened(doc)),
       vscode.workspace.onDidCloseTextDocument((doc) => {
+        // 閉じたファイルの全文はメモリに持たない（未読でも、次に表示するときに読み込み直す）
         const key = doc.uri.toString();
         this.diffCache.delete(key);
-        if (!this.store.get(key)?.unread) {
-          this.store.evict(key);
-        }
+        this.store.evict(key);
       }),
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('markdownUnreadChanges') || e.affectsConfiguration('files.exclude')) {
-          void this.rescan();
+          void this.rescan(true);
         }
       }),
       // 制限モードを解除したら、フォルダ側の設定を反映して取り込み直す
-      vscode.workspace.onDidGrantWorkspaceTrust(() => void this.rescan()),
+      vscode.workspace.onDidGrantWorkspaceTrust(() => void this.rescan(true)),
+      vscode.workspace.onWillRenameFiles((e) => this.onWillRename(e.files)),
+      vscode.workspace.onDidRenameFiles((e) => void this.onDidRename(e.files)),
     );
-    await this.rescan();
+    await this.rescan(false);
   }
 
   dispose(): void {
@@ -80,13 +105,37 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     void this.store.flush();
   }
 
+  /** 未保存の記録（index.json）をすぐに保存する。終了時に呼ぶ */
+  flush(): Promise<void> {
+    return this.store.flush();
+  }
+
   // ---- 取り込みと監視 ----
 
-  private async rescan(): Promise<void> {
+  /**
+   * ワークスペース全体を取り込み直す。
+   * newFilesAsRead：新しく見つかったファイルを「既読」として取り込むか。
+   * 設定の変更や信頼で対象が広がったときは true（前からあったファイルを全部未読にしないため）。
+   * 起動時は false（閉じている間に作られたファイルは、全体を追加として扱う）
+   */
+  private async rescan(newFilesAsRead: boolean): Promise<void> {
+    try {
+      await this.rescanUnsafe(newFilesAsRead);
+    } catch (err) {
+      console.error('[markdown-unread-changes] rescan failed', err);
+      if (this.mode === 'starting' || this.mode === 'scanning') {
+        this.mode = 'ready';
+        this.fire(undefined, false);
+      }
+    }
+  }
+
+  private async rescanUnsafe(newFilesAsRead: boolean): Promise<void> {
     const generation = ++this.scanGeneration;
     this.config = readConfig();
     this.include = new GlobMatcher(this.config.include);
     this.exclude = new GlobMatcher(this.config.exclude);
+    this.warnInvalidGlobs();
     this.setupWatcher();
 
     const files = await vscode.workspace.findFiles(
@@ -123,12 +172,12 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     this.progress = { done: 0, total: files.length };
     this.fire(undefined, false);
 
-    const firstRun = !this.store.initialized;
+    const asRead = newFilesAsRead || !this.store.initialized;
     for (let i = 0; i < files.length; i += SCAN_CHUNK) {
       if (generation !== this.scanGeneration) {
         return;
       }
-      await Promise.all(files.slice(i, i + SCAN_CHUNK).map((uri) => this.scanFile(uri, firstRun)));
+      await Promise.all(files.slice(i, i + SCAN_CHUNK).map((uri) => this.scanFile(uri, asRead)));
       this.progress = { done: Math.min(i + SCAN_CHUNK, files.length), total: files.length };
       this.fire(undefined, false);
       // 他の処理を止めないよう、少しずつ進める
@@ -186,26 +235,120 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     this.watcher = vscode.workspace.createFileSystemWatcher(combineGlobs(this.config.include) ?? '**/*.md');
     this.watcher.onDidCreate((uri) => void this.onDiskChanged(uri));
     this.watcher.onDidChange((uri) => void this.onDiskChanged(uri));
-    this.watcher.onDidDelete((uri) => {
-      const key = uri.toString();
+    this.watcher.onDidDelete((uri) => this.onDiskDeleted(uri));
+  }
+
+  /** 使えない glob が設定されていたら警告する（同じ内容では繰り返さない） */
+  private warnInvalidGlobs(): void {
+    const invalid = this.config.invalidGlobs.join(', ');
+    if (invalid === this.warnedInvalidGlobs) {
+      return;
+    }
+    this.warnedInvalidGlobs = invalid;
+    if (invalid) {
+      void vscode.window.showWarningMessage(
+        `Markdown Unread Changes: 次の glob パターンは書き方に誤りがあるため無視しました：${invalid}`,
+      );
+    }
+  }
+
+  /**
+   * 削除の通知。フォルダを消したときは、フォルダの URI 1 件だけで届くことがあるため、
+   * その下にあるファイルの記録もまとめて消す
+   */
+  private onDiskDeleted(uri: vscode.Uri): void {
+    const folderKey = uri.toString();
+    const keys = new Set([folderKey, ...this.store.keys().filter((k) => isSameOrUnder(k, folderKey))]);
+    for (const key of keys) {
       this.deferred.delete(key);
+      // VS Code の中での名前変更なら、完了の通知で付け替えるので消さない
+      if ([...this.pendingRenames.values()].includes(key)) {
+        continue;
+      }
       void this.withLock(key, async () => {
         if (this.store.get(key)) {
-          this.diffCache.delete(key);
-          await this.store.remove(key);
-          this.fire(key, false);
+          await this.forget(key);
         }
       });
-    });
+    }
+  }
+
+  /** ファイルの記録を消す（ファイルが消えた、対象外になったなど） */
+  private async forget(key: string): Promise<void> {
+    this.diffCache.delete(key);
+    await this.store.remove(key);
+    this.fire(key, false);
+  }
+
+  /** VS Code の中での名前変更の予定を覚える（フォルダの名前変更なら、その下のファイルもすべて） */
+  private onWillRename(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): void {
+    const planned: string[] = [];
+    for (const { oldUri, newUri } of files) {
+      const oldFolder = oldUri.toString();
+      const newFolder = newUri.toString();
+      for (const key of this.store.keys()) {
+        if (isSameOrUnder(key, oldFolder)) {
+          const newKey = newFolder + key.slice(oldFolder.length);
+          this.pendingRenames.set(newKey, key);
+          planned.push(newKey);
+        }
+      }
+    }
+    if (planned.length > 0) {
+      // 名前変更が失敗すると完了の通知が来ないので、しばらくしたら予定を捨てる
+      setTimeout(() => {
+        for (const newKey of planned) {
+          this.pendingRenames.delete(newKey);
+        }
+      }, RENAME_TIMEOUT_MS).unref?.();
+    }
+  }
+
+  /** 名前変更の完了。既読の状態とスナップショットを新しい名前に付け替える */
+  private async onDidRename(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
+    for (const { newUri } of files) {
+      const newFolder = newUri.toString();
+      const moves = [...this.pendingRenames].filter(([newKey]) => isSameOrUnder(newKey, newFolder));
+      for (const [newKey, oldKey] of moves) {
+        this.pendingRenames.delete(newKey);
+        const target = vscode.Uri.parse(newKey);
+        await this.withLock(oldKey, () =>
+          this.withLock(newKey, async () => {
+            try {
+              if (!this.isTarget(target)) {
+                // 対象外の名前（拡張子の変更や除外したフォルダへの移動）になった
+                if (this.store.get(oldKey)) {
+                  await this.forget(oldKey);
+                }
+                return;
+              }
+              this.diffCache.delete(oldKey);
+              this.diffCache.delete(newKey);
+              await this.store.rename(oldKey, newKey);
+              this.fire(oldKey, false);
+              this.fire(newKey, true);
+            } catch (err) {
+              console.error('[markdown-unread-changes] rename failed', oldKey, newKey, err);
+            }
+          }),
+        );
+        // 名前変更と同時に内容が変わっていないか確かめる
+        await this.onDiskChanged(target);
+      }
+    }
   }
 
   /**
    * 起動時の確認。更新日時とサイズが変わったものだけ中身を比べる。
-   * 未読と記録されているファイルは、記録が実際の内容と食い違っていないか毎回確かめ直す
+   * 未読と記録されているファイルは、記録が実際の内容と食い違っていないか毎回確かめ直す。
+   * newFileAsRead：記録のないファイルを「既読」として取り込むか（false なら全体を追加として扱う）
    */
-  private scanFile(uri: vscode.Uri, firstRun: boolean): Promise<void> {
+  private scanFile(uri: vscode.Uri, newFileAsRead: boolean): Promise<void> {
     const key = uri.toString();
     return this.withLock(key, async () => {
+      if (!isSupportedScheme(uri)) {
+        return;
+      }
       try {
         const stat = await vscode.workspace.fs.stat(uri);
         if (stat.size > this.config.maxFileSizeBytes) {
@@ -218,28 +361,34 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
         }
         const text = await this.readCurrentText(uri);
         if (!entry) {
-          // 初回は「既読」として取り込む。2 回目以降に見つかった新しいファイルは、全体を追加として扱う
-          const baseline = firstRun ? text : '';
+          // 初回や対象が広がったときは「既読」として取り込む。起動時に見つかった新しいファイルは、全体を追加として扱う
+          const baseline = newFileAsRead ? text : '';
           await this.store.writeSnapshot(key, baseline, { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
-          if (!firstRun) {
+          if (!newFileAsRead) {
             this.updateUnread(key, baseline, text);
           }
+          this.evictIfClosed(key);
           return;
         }
         const snapshot = await this.store.readSnapshot(key);
         this.store.update(key, { mtime: stat.mtime, size: stat.size });
         this.updateUnread(key, snapshot ?? '', text);
-        if (!this.store.get(key)?.unread) {
-          this.store.evict(key);
-        }
+        this.evictIfClosed(key);
       } catch (err) {
+        if (isNotFound(err)) {
+          // 検索の結果に入っていたが、取り込むまでに消えた。削除の通知の処理と順番が前後しても記録を残さない
+          if (this.store.get(key)) {
+            await this.forget(key);
+          }
+          return;
+        }
         console.error('[markdown-unread-changes] scan failed', key, err);
       }
     });
   }
 
   private isTarget(uri: vscode.Uri): boolean {
-    if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') {
+    if (!isSupportedScheme(uri)) {
       return false;
     }
     if (!vscode.workspace.getWorkspaceFolder(uri)) {
@@ -251,7 +400,8 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
 
   private onDiskChanged(uri: vscode.Uri): Promise<void> {
     const key = uri.toString();
-    if (!this.isTarget(uri)) {
+    // VS Code の中での名前変更の途中なら、完了の通知で付け替えてから確かめる
+    if (!this.isTarget(uri) || this.pendingRenames.has(key)) {
       return Promise.resolve();
     }
     // 取り込み中は、まだ取り込んでいないファイルを「新しいファイル」と誤認しないよう、終わるまで待たせる
@@ -280,7 +430,15 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
         }
         const snapshot = (await this.store.readSnapshot(key)) ?? '';
         this.updateUnread(key, snapshot, text);
+        this.evictIfClosed(key);
       } catch (err) {
+        if (isNotFound(err)) {
+          // 通知のあとに消えた
+          if (this.store.get(key)) {
+            await this.forget(key);
+          }
+          return;
+        }
         console.error('[markdown-unread-changes] check failed', key, err);
       }
     });
@@ -348,14 +506,33 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     }
   }
 
+  /**
+   * 差分を計算する。結果をキャッシュするのは、エディタで開いているファイルだけ
+   * （プレビューやステータスバーで繰り返し使う。開いていないファイルの全文をメモリに持ち続けないため）
+   */
   private diff(key: string, oldText: string, newText: string): LineDiffResult {
     const hit = this.diffCache.get(key);
     if (hit && hit.oldText === oldText && hit.newText === newText) {
       return hit.result;
     }
     const result = computeLineDiff(oldText, newText);
-    this.diffCache.set(key, { oldText, newText, result });
+    if (this.isOpen(key)) {
+      this.diffCache.set(key, { oldText, newText, result });
+    } else {
+      this.diffCache.delete(key);
+    }
     return result;
+  }
+
+  private isOpen(key: string): boolean {
+    return vscode.workspace.textDocuments.some((d) => d.uri.toString() === key);
+  }
+
+  /** 開いていないファイルのスナップショットをメモリから外す */
+  private evictIfClosed(key: string): void {
+    if (!this.isOpen(key)) {
+      this.store.evict(key);
+    }
   }
 
   /** プレビューの描画時に呼ばれる（同期）。スナップショットが未読み込みなら読み込んでから再描画する */
@@ -441,10 +618,22 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
       if (!this.store.get(key)) {
         return;
       }
-      const text = await this.readCurrentText(uri);
-      const stat = await vscode.workspace.fs.stat(uri);
+      let text: string;
+      let stat: vscode.FileStat;
+      try {
+        stat = await vscode.workspace.fs.stat(uri);
+        text = await this.readCurrentText(uri);
+      } catch (err) {
+        if (isNotFound(err)) {
+          // ファイルがもう無い：記録を消して未読一覧から外す
+          await this.forget(key);
+          return;
+        }
+        throw err;
+      }
       await this.store.writeSnapshot(key, text, { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
       this.diffCache.delete(key);
+      this.evictIfClosed(key);
       this.fire(key, true);
     });
   }
