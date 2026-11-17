@@ -1,45 +1,48 @@
 # Markdown Unread Changes
 
-Highlights what changed in your Markdown files since you last read them — right in VS Code's built-in Markdown preview.
+Markdown ファイルの、前回読んだときからの変更箇所を、VS Code 標準の Markdown プレビューで色付けする拡張機能です。
 
-Useful when an AI assistant (or a teammate) rewrites your notes and you want to see exactly what changed, without using Git.
+AI アシスタントや他の人がノートを書き換えたとき、どこが変わったのかを、Git を使わずに確認できます。
 
-## Features
+## 機能
 
-- **Colors in the built-in preview**
-  - Yellow: modified blocks
-  - Green: added blocks
-  - Red: deleted content (shown with strikethrough)
-- **Previous text**: hover a modified block to see what it said before, or click it to expand the previous text in place.
-- **Tables**: only the changed rows are colored. Column or alignment changes mark the whole table.
-- **Status bar**
-  - `変更 3件` (3 changes): the number of change locations in the current file. Click to mark the file as read.
-  - `未読 2ファイル` (2 unread files): click to pick an unread file. It opens in the Markdown preview by default.
-  - `未読なし`: nothing unread.
-- **Commands**: `Mark Current File as Read`, `Mark All Files as Read`, `Show Unread Files`.
+- **標準のプレビューで色付け**
+  - 黄色：変更されたブロック
+  - 緑：追加されたブロック
+  - 赤：削除された内容（取り消し線で表示）
+- **変更前のテキスト**：変更されたブロックにマウスを乗せると、変更前の内容を表示します。クリックすると、その場に展開します。
+- **表**：変わった行だけに色を付けます。列の増減や配置の変更は、表全体を枠で囲んで示します。
+- **ステータスバー**
+  - `変更 3件`：表示中のファイルの変更箇所の数。クリックすると、そのファイルを既読にします。
+  - `未読 2ファイル`：クリックすると、未読のファイルの一覧を開きます。選んだファイルは、初期設定ではプレビューで開きます。
+  - `未読なし`：未読のファイルはありません。
+- **コマンド**（コマンドパレットから実行）
+  - `Markdown Unread Changes: 表示中のファイルを既読にする`
+  - `Markdown Unread Changes: すべてのファイルを既読にする`（確認のダイアログが出ます）
+  - `Markdown Unread Changes: 未読のファイルの一覧を表示する`
 
-On first start, every Markdown file in the workspace is imported as "read". After that, any change becomes "unread" until you mark it as read.
+初めて起動したときに、ワークスペース内の Markdown ファイルをすべて「既読」として取り込みます。その後に変更されたファイルは、既読にするまで「未読」になります。
 
-## Settings
+## 設定
 
-| Setting | Default | Description |
+| 設定 | 初期値 | 内容 |
 |---|---|---|
-| `markdownUnreadChanges.include` | `["**/*.md"]` | Glob patterns of files to track |
-| `markdownUnreadChanges.exclude` | `node_modules`, `.git`, `dist`, `out`, `build`, `vendor` | Glob patterns to exclude (`files.exclude` is applied too) |
-| `markdownUnreadChanges.maxFiles` | `2000` | When exceeded, only files you open are tracked |
-| `markdownUnreadChanges.maxFileSize` | `1024` (KB) | Larger files are not tracked |
-| `markdownUnreadChanges.openUnreadFileIn` | `preview` | Where to open a file picked from the unread list: `preview` (brings an existing preview of the file to the front) or `editor` |
+| `markdownUnreadChanges.include` | `["**/*.md"]` | 追跡するファイルの glob パターン |
+| `markdownUnreadChanges.exclude` | `node_modules`、`.git`、`dist`、`out`、`build`、`vendor` | 除外するファイルの glob パターン（`files.exclude` に指定したものも除外します） |
+| `markdownUnreadChanges.maxFiles` | `2000` | 追跡するファイル数の上限。超えた場合は、開いたファイルだけを追跡します |
+| `markdownUnreadChanges.maxFileSize` | `1024`（KB） | これより大きいファイルは追跡しません |
+| `markdownUnreadChanges.openUnreadFileIn` | `preview` | 未読の一覧で選んだファイルを開く場所。`preview`（プレビュー。すでに開いていれば前面に出す）か `editor`（テキストエディタ） |
 
-## Privacy
+## プライバシー
 
-This extension **never connects to the internet**.
+この拡張機能は、**インターネットに一切接続しません**。
 
-- No telemetry, no analytics, no error reporting, no remote resources. The preview CSS and script are bundled with the extension.
-- The only data it stores is a snapshot of each tracked Markdown file at the moment you marked it as read. Snapshots are saved in VS Code's per-workspace local storage folder (`ExtensionContext.storageUri`) and are not synced.
-- The extension has no runtime dependencies.
+- テレメトリ、利用状況の収集、エラー情報の送信は行いません。外部からファイルを読み込むこともありません。プレビュー用の CSS とスクリプトは拡張機能に同梱しています。
+- 保存するのは、追跡している Markdown ファイルを既読にした時点の内容（スナップショット）だけです。VS Code がワークスペースごとに用意するローカルのフォルダ（`ExtensionContext.storageUri`）に保存し、設定の同期（Settings Sync）にも載せません。
+- 実行時に使う外部のパッケージはありません。
 
-This is enforced by lint rules that forbid network APIs in the source code.
+ソースコードでは、通信に使う API を Lint のルールで禁止しています。
 
-## License
+## ライセンス
 
-[MIT](LICENSE)
+MIT（LICENSE ファイルを参照）

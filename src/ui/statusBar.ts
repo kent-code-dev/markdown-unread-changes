@@ -1,7 +1,7 @@
 // ステータスバーに変更箇所の数・未読ファイルの数を表示する（ノート「ステータスバーの件数」）
 import * as vscode from 'vscode';
 import type { Tracker } from '../tracker/tracker.ts';
-import { resolvePreviewTarget } from './previewTarget.ts';
+import { isMarkdownPreviewTab, resolvePreviewTab } from './previewTarget.ts';
 
 export const COMMAND_MARK_AS_READ = 'markdownUnreadChanges.markAsRead';
 export const COMMAND_SHOW_UNREAD = 'markdownUnreadChanges.showUnreadFiles';
@@ -39,7 +39,8 @@ export class StatusBarController implements vscode.Disposable {
   }
 
   /**
-   * 表示中の Markdown ファイル。プレビューにフォーカスがあるときは、タブの題名から表示中のファイルを推定する。
+   * 表示中の Markdown ファイル。プレビューにフォーカスがあるときは、プレビューのタブから表示中のファイルを判定する
+   * （最初からプレビューで開く形ならタブの URI、コマンドで開いたプレビューならタブの題名から）。
    * 特定できなければ undefined（別のファイルを誤って既読にしないため）
    */
   activeMarkdownUri(): vscode.Uri | undefined {
@@ -49,25 +50,22 @@ export class StatusBarController implements vscode.Disposable {
       return editor.document.uri;
     }
     const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
-    if (tab && tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes('markdown.preview')) {
-      const candidates = [
-        ...this.tracker.trackedFiles(),
-        ...vscode.workspace.textDocuments.filter((d) => d.languageId === 'markdown').map((d) => d.uri.toString()),
-      ];
-      const target = resolvePreviewTarget(tab.label, candidates, this.recent);
-      return target ? vscode.Uri.parse(target) : undefined;
+    if (!isMarkdownPreviewTab(tab)) {
+      return undefined;
     }
-    return undefined;
+    const candidates = [
+      ...this.tracker.trackedFiles(),
+      ...vscode.workspace.textDocuments.filter((d) => d.languageId === 'markdown').map((d) => d.uri.toString()),
+    ];
+    const target = resolvePreviewTab(tab, candidates, this.recent);
+    return target ? vscode.Uri.parse(target) : undefined;
   }
 
   /** プレビューにフォーカスがあるが、表示中のファイルを特定できないか */
   private isUnresolvedPreview(): boolean {
-    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
     return (
       !vscode.window.activeTextEditor &&
-      !!tab &&
-      tab.input instanceof vscode.TabInputWebview &&
-      tab.input.viewType.includes('markdown.preview') &&
+      isMarkdownPreviewTab(vscode.window.tabGroups.activeTabGroup.activeTab) &&
       this.activeMarkdownUri() === undefined
     );
   }

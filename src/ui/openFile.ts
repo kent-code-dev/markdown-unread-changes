@@ -1,7 +1,7 @@
 // 未読ファイルの一覧で選んだファイルを開く（設定に応じてプレビューかエディタで）
 import * as vscode from 'vscode';
 import { CONFIG_SECTION } from '../config.ts';
-import { previewLabelMatches } from './previewTarget.ts';
+import { isMarkdownPreviewTab, previewLabelMatches } from './previewTarget.ts';
 
 export type OpenTarget = 'preview' | 'editor';
 
@@ -34,7 +34,7 @@ const FOCUS_GROUP_COMMANDS = [
 
 /**
  * そのファイルのプレビューがすでに開いていれば前面に出す。
- * VS Code の API ではプレビューのタブがどのファイルを表示しているか分からないため、
+ * 最初からプレビューで開く形のタブはタブの URI で比べる。コマンドで開いたプレビューは、API で表示中のファイルが分からないため、
  * タブの題名（「Preview foo.md」「[Preview] foo.md」など。末尾がファイル名）で探す。
  * 同じファイル名の Markdown を複数開いているなど、特定できない場合は false を返す
  */
@@ -44,21 +44,21 @@ async function revealExistingPreview(uri: vscode.Uri): Promise<boolean> {
     return false;
   }
   // 同じファイル名の別のファイルを開いていると、題名だけでは区別できない
-  const sameName = vscode.workspace.textDocuments.filter(
+  const ambiguousName = vscode.workspace.textDocuments.some(
     (d) => d.languageId === 'markdown' && d.uri.path.split('/').pop() === name && d.uri.toString() !== uri.toString(),
   );
-  if (sameName.length > 0) {
-    return false;
-  }
+  const key = uri.toString();
 
   const matches: { group: vscode.TabGroup; tab: vscode.Tab; index: number }[] = [];
   for (const group of vscode.window.tabGroups.all) {
     group.tabs.forEach((tab, index) => {
-      if (
-        tab.input instanceof vscode.TabInputWebview &&
-        tab.input.viewType.includes('markdown.preview') &&
-        previewLabelMatches(tab.label, name)
-      ) {
+      if (!isMarkdownPreviewTab(tab)) {
+        return;
+      }
+      // 最初からプレビューで開く形のタブは URI を持つので、正確に比べられる
+      const tabUri = (tab.input as { uri?: unknown }).uri;
+      const matched = tabUri ? String(tabUri) === key : !ambiguousName && previewLabelMatches(tab.label, name);
+      if (matched) {
         matches.push({ group, tab, index });
       }
     });

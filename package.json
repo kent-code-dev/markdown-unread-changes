@@ -1,9 +1,10 @@
 {
   "name": "markdown-unread-changes",
   "displayName": "Markdown Unread Changes",
-  "description": "Highlights what changed in your Markdown files since you last read them, right in the built-in Markdown preview. Works fully offline.",
+  "description": "Markdown ファイルの、前回読んだときからの変更箇所を、VS Code 標準の Markdown プレビューで色付けします。インターネットには一切接続しません。",
   "version": "0.0.1",
   "publisher": "kent-code-dev",
+  "icon": "media/icon.png",
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0"
@@ -34,17 +35,17 @@
     "commands": [
       {
         "command": "markdownUnreadChanges.markAsRead",
-        "title": "Mark Current File as Read",
+        "title": "表示中のファイルを既読にする",
         "category": "Markdown Unread Changes"
       },
       {
         "command": "markdownUnreadChanges.markAllAsRead",
-        "title": "Mark All Files as Read",
+        "title": "すべてのファイルを既読にする",
         "category": "Markdown Unread Changes"
       },
       {
         "command": "markdownUnreadChanges.showUnreadFiles",
-        "title": "Show Unread Files",
+        "title": "未読のファイルの一覧を表示する",
         "category": "Markdown Unread Changes"
       }
     ],
@@ -59,7 +60,7 @@
           "default": [
             "**/*.md"
           ],
-          "markdownDescription": "Glob patterns (relative to the workspace folder) of Markdown files to track."
+          "markdownDescription": "追跡する Markdown ファイルの glob パターン（ワークスペースのフォルダからの相対パス）。"
         },
         "markdownUnreadChanges.exclude": {
           "type": "array",
@@ -74,19 +75,19 @@
             "**/build/**",
             "**/vendor/**"
           ],
-          "markdownDescription": "Glob patterns of files to exclude. Patterns in `#files.exclude#` are excluded as well."
+          "markdownDescription": "追跡から除外するファイルの glob パターン。`#files.exclude#` に指定したものも除外します。"
         },
         "markdownUnreadChanges.maxFiles": {
           "type": "number",
           "default": 2000,
           "minimum": 1,
-          "markdownDescription": "Maximum number of files to track. When exceeded, only files you open are tracked."
+          "markdownDescription": "追跡するファイル数の上限。超えた場合は、開いたファイルだけを追跡します。"
         },
         "markdownUnreadChanges.maxFileSize": {
           "type": "number",
           "default": 1024,
           "minimum": 1,
-          "markdownDescription": "Files larger than this size (in KB) are not tracked."
+          "markdownDescription": "これより大きいファイル（KB 単位）は追跡しません。"
         },
         "markdownUnreadChanges.openUnreadFileIn": {
           "type": "string",
@@ -95,11 +96,11 @@
             "editor"
           ],
           "enumDescriptions": [
-            "Open in the Markdown preview so the changes are highlighted. If a preview of the file is already open, it is brought to the front.",
-            "Open in the text editor."
+            "Markdown プレビューで開きます（変更箇所の色が見えます）。そのファイルのプレビューがすでに開いていれば、前面に出します。",
+            "テキストエディタで開きます。"
           ],
           "default": "preview",
-          "markdownDescription": "Where to open a file picked from the unread file list."
+          "markdownDescription": "未読のファイルの一覧で選んだファイルを開く場所。"
         }
       }
     }
@@ -112,12 +113,14 @@
     "test": "node --import ./test/setup/register.mjs --test \"test/**/*.test.mts\"",
     "check": "npm run typecheck && npm run lint && npm test && npm run check:deps",
     "check:deps": "npm ls --omit=dev --all",
+    "package": "vsce package --allow-missing-repository",
     "vscode:prepublish": "npm run check && node esbuild.mjs --production"
   },
   "devDependencies": {
     "@types/markdown-it": "^14.2.0",
     "@types/node": "^20.19.43",
     "@types/vscode": "1.90.0",
+    "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.25.12",
     "eslint": "^9.39.5",
     "markdown-it": "^14.3.3",

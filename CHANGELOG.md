@@ -1,5 +1,5 @@
-# Changelog
+# 変更履歴
 
-## 0.0.1 (unreleased)
+## 0.0.1（未公開）
 
-- Initial development version.
+- 開発中の最初の版
