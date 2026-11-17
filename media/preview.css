@@ -1,0 +1,114 @@
+/* Markdown Unread Changes：プレビューでの変更箇所の色付け（拡張に同梱。外部から読み込まない） */
+
+:root {
+  --muc-modified-bg: rgba(255, 200, 0, 0.18);
+  --muc-modified-border: rgba(220, 160, 0, 0.9);
+  --muc-added-bg: rgba(40, 180, 80, 0.16);
+  --muc-added-border: rgba(30, 150, 60, 0.9);
+  --muc-deleted-bg: rgba(230, 60, 60, 0.14);
+  --muc-deleted-border: rgba(200, 40, 40, 0.9);
+  --muc-tooltip-bg: var(--vscode-editorHoverWidget-background, #252526);
+  --muc-tooltip-fg: var(--vscode-editorHoverWidget-foreground, #cccccc);
+  --muc-tooltip-border: var(--vscode-editorHoverWidget-border, #454545);
+}
+
+.muc-block {
+  border-left: 4px solid transparent;
+  padding-left: 8px;
+  margin-left: -12px;
+  border-radius: 2px;
+}
+
+.muc-block.muc-modified {
+  background: var(--muc-modified-bg);
+  border-left-color: var(--muc-modified-border);
+}
+
+.muc-block.muc-added {
+  background: var(--muc-added-bg);
+  border-left-color: var(--muc-added-border);
+}
+
+.muc-block.muc-deleted {
+  background: var(--muc-deleted-bg);
+  border-left-color: var(--muc-deleted-border);
+  white-space: pre-wrap;
+  text-decoration: line-through;
+  opacity: 0.85;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+  font-size: 0.95em;
+}
+
+/* 表の行 */
+tr.muc-row.muc-modified > td,
+tr.muc-row.muc-modified > th {
+  background: var(--muc-modified-bg);
+}
+
+tr.muc-row.muc-added > td,
+tr.muc-row.muc-added > th {
+  background: var(--muc-added-bg);
+}
+
+tr.muc-row.muc-deleted > td {
+  background: var(--muc-deleted-bg);
+  text-decoration: line-through;
+  opacity: 0.85;
+}
+
+/* 列や配置が変わった表 */
+.muc-table-changed {
+  outline: 2px dashed var(--muc-modified-border);
+  outline-offset: 4px;
+  margin: 1.5em 0 1em;
+  position: relative;
+}
+
+.muc-table-changed > .muc-label {
+  display: inline-block;
+  font-size: 0.8em;
+  padding: 1px 8px;
+  margin-bottom: 4px;
+  border-radius: 3px;
+  background: var(--muc-modified-border);
+  color: #000;
+}
+
+/* 変更前のテキスト（ホバーとクリック展開） */
+[data-muc-old] {
+  cursor: help;
+}
+
+.muc-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(600px, 90vw);
+  max-height: 50vh;
+  overflow: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--muc-tooltip-border);
+  border-radius: 4px;
+  background: var(--muc-tooltip-bg);
+  color: var(--muc-tooltip-fg);
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.36);
+}
+
+.muc-tooltip-title,
+.muc-old-inline-title {
+  font-weight: bold;
+  margin-bottom: 4px;
+  opacity: 0.8;
+}
+
+.muc-old-inline {
+  margin: 4px 0 8px;
+  padding: 6px 10px;
+  border-left: 4px solid var(--muc-deleted-border);
+  background: var(--muc-deleted-bg);
+  white-space: pre-wrap;
+  font-size: 0.9em;
+}

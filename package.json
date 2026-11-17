@@ -1,0 +1,114 @@
+{
+  "name": "markdown-unread-changes",
+  "displayName": "Markdown Unread Changes",
+  "description": "Highlights what changed in your Markdown files since you last read them, right in the built-in Markdown preview. Works fully offline.",
+  "version": "0.0.1",
+  "publisher": "kent-code-dev",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "markdown",
+    "preview",
+    "diff",
+    "changes",
+    "unread"
+  ],
+  "type": "module",
+  "main": "./dist/extension.cjs",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "markdown.markdownItPlugins": true,
+    "markdown.previewStyles": [
+      "./media/preview.css"
+    ],
+    "markdown.previewScripts": [
+      "./media/preview.js"
+    ],
+    "commands": [
+      {
+        "command": "markdownUnreadChanges.markAsRead",
+        "title": "Mark Current File as Read",
+        "category": "Markdown Unread Changes"
+      },
+      {
+        "command": "markdownUnreadChanges.markAllAsRead",
+        "title": "Mark All Files as Read",
+        "category": "Markdown Unread Changes"
+      },
+      {
+        "command": "markdownUnreadChanges.showUnreadFiles",
+        "title": "Show Unread Files",
+        "category": "Markdown Unread Changes"
+      }
+    ],
+    "configuration": {
+      "title": "Markdown Unread Changes",
+      "properties": {
+        "markdownUnreadChanges.include": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/*.md"
+          ],
+          "markdownDescription": "Glob patterns (relative to the workspace folder) of Markdown files to track."
+        },
+        "markdownUnreadChanges.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/node_modules/**",
+            "**/.git/**",
+            "**/dist/**",
+            "**/out/**",
+            "**/build/**",
+            "**/vendor/**"
+          ],
+          "markdownDescription": "Glob patterns of files to exclude. Patterns in `#files.exclude#` are excluded as well."
+        },
+        "markdownUnreadChanges.maxFiles": {
+          "type": "number",
+          "default": 2000,
+          "minimum": 1,
+          "markdownDescription": "Maximum number of files to track. When exceeded, only files you open are tracked."
+        },
+        "markdownUnreadChanges.maxFileSize": {
+          "type": "number",
+          "default": 1024,
+          "minimum": 1,
+          "markdownDescription": "Files larger than this size (in KB) are not tracked."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "node --test \"test/**/*.test.mts\"",
+    "check": "npm run typecheck && npm run lint && npm test && npm run check:deps",
+    "check:deps": "npm ls --omit=dev --all",
+    "vscode:prepublish": "npm run check && node esbuild.mjs --production"
+  },
+  "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
+    "@types/node": "^20.19.43",
+    "@types/vscode": "1.90.0",
+    "esbuild": "^0.25.12",
+    "eslint": "^9.39.5",
+    "markdown-it": "^14.3.3",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.73.0"
+  }
+}
