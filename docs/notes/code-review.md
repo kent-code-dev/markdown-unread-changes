@@ -9,7 +9,7 @@
 
 ### 後回し（決定済み）
 - 低：L2、L3、L8、L10
-- テスト：T1〜T4、T6〜T8（M1〜M7・L6 などの今回の修正のテストもここに含む。M6 の「テストの罠」と CI も後回し）
+- テスト：T1〜T4、T6〜T8（M1〜M7・L6 などの今回の修正のテストもここに含む。M6 の CI も後回し）
 
 ### 確認済み
 - 個人情報：問題なし（下の「問題なしと確認したもの」を参照）
@@ -21,6 +21,7 @@
 - M4：使えない glob は無視して警告を出す（`isValidGlob`）。設定の値の型が違う場合も初期値を使う。取り込み直しの失敗は捕捉する
 - M5：各行の 2-gram は 1 回だけ作る。対応づけの上限を、行数に加えて文字数（見積もり 200 万）でも判定する。1 行 5000 文字 × 200 行の書き換えで約 80ms
 - M6：Lint に `globalThis.fetch` などのプロパティ、動的 import、`createRequire`、`vscode.open`、URL の文字列、`innerHTML`・`src`・`href` などを追加。`media/preview.js` で作る要素を div・tr・td に限定。ビルド後の `dist/extension.cjs` と `media/` の JS・CSS を調べる `scripts/check-offline.mjs` を追加し、`vscode:prepublish` で実行する（URL・CSS の `url()`・`@import`・通信の API）
+- M6（テストの罠）：テストの開始時に、通信の関数（http / https / http2 / net / tls / dgram / dns、fetch / XMLHttpRequest / WebSocket / EventSource）を、呼ばれたら例外を投げる関数に差し替える（`test/setup/network-trap.mjs`）。罠が効いていることのテストは `test/offline.test.mts`。拡張のコードにわざと fetch を入れると、テストが失敗することも確かめた
 - M7：リストの中では、削除された内容を `<li class="muc-deleted-item">` として出す（行頭記号なし、番号付きリストの番号を進めない）
 - L1：`deactivate` で index.json の保存を待つ
 - L4：README の「制限事項」に「UTF-8 のみ対応」と書いて割り切る

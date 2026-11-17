@@ -11,3 +11,6 @@ registerHooks({
     return nextResolve(specifier, context);
   },
 });
+
+// 通信の関数を、呼ばれたら例外を投げる罠に差し替える
+await import('./network-trap.mjs');
