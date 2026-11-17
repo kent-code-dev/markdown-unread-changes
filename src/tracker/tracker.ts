@@ -31,6 +31,15 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
   private readonly editTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly onDidChangeEmitter = new vscode.EventEmitter<{ uri?: string; snapshotChanged: boolean }>();
   private scanGeneration = 0;
+  /**
+   * ファイルごとの処理の待ち行列。取り込み・変更通知・編集・既読が同じファイルを同時に扱うと、
+   * 古いスナップショットとの比較結果で未読の記録を上書きしてしまうため、1 つずつ順に処理する
+   */
+  private readonly locks = new Map<string, Promise<void>>();
+  /** 実行中の処理（テストで完了を待つため） */
+  private readonly running = new Set<Promise<unknown>>();
+  /** 取り込み中に届いた変更通知。取り込みが終わってから処理する */
+  private readonly deferred = new Map<string, vscode.Uri>();
 
   /** 状態が変わったときに発火する。snapshotChanged はプレビューの再描画が必要なとき true */
   readonly onDidChange = this.onDidChangeEmitter.event;
@@ -134,6 +143,40 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     this.store.initialized = true;
     this.mode = 'ready';
     this.fire(undefined, true);
+
+    // 取り込み中に届いた変更通知を、取り込みの結果を前提に処理する
+    const deferred = [...this.deferred.values()];
+    this.deferred.clear();
+    for (const uri of deferred) {
+      void this.onDiskChanged(uri);
+    }
+  }
+
+  /** 同じファイルの処理を 1 つずつ順に実行する */
+  private withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(key) ?? Promise.resolve();
+    const result = previous.then(fn);
+    const done = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.locks.set(key, done);
+    this.running.add(done);
+    void done.then(() => {
+      this.running.delete(done);
+      if (this.locks.get(key) === done) {
+        this.locks.delete(key);
+      }
+    });
+    return result;
+  }
+
+  /** 実行中の処理がすべて終わるまで待つ（テスト用） */
+  async idle(): Promise<void> {
+    while (this.running.size > 0 || this.editTimers.size > 0) {
+      await Promise.all([...this.running]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
   }
 
   private setupWatcher(): void {
@@ -143,45 +186,54 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     this.watcher.onDidChange((uri) => void this.onDiskChanged(uri));
     this.watcher.onDidDelete((uri) => {
       const key = uri.toString();
-      if (this.store.get(key)) {
-        this.diffCache.delete(key);
-        void this.store.remove(key).then(() => this.fire(key, false));
-      }
+      this.deferred.delete(key);
+      void this.withLock(key, async () => {
+        if (this.store.get(key)) {
+          this.diffCache.delete(key);
+          await this.store.remove(key);
+          this.fire(key, false);
+        }
+      });
     });
   }
 
-  /** 起動時の確認。更新日時とサイズが変わったものだけ中身を比べる */
-  private async scanFile(uri: vscode.Uri, firstRun: boolean): Promise<void> {
+  /**
+   * 起動時の確認。更新日時とサイズが変わったものだけ中身を比べる。
+   * 未読と記録されているファイルは、記録が実際の内容と食い違っていないか毎回確かめ直す
+   */
+  private scanFile(uri: vscode.Uri, firstRun: boolean): Promise<void> {
     const key = uri.toString();
-    try {
-      const stat = await vscode.workspace.fs.stat(uri);
-      if (stat.size > this.config.maxFileSizeBytes) {
-        await this.store.remove(key);
-        return;
-      }
-      const entry = this.store.get(key);
-      if (entry && entry.mtime === stat.mtime && entry.size === stat.size) {
-        return;
-      }
-      const text = await this.readCurrentText(uri);
-      if (!entry) {
-        // 初回は「既読」として取り込む。2 回目以降に見つかった新しいファイルは、全体を追加として扱う
-        const baseline = firstRun ? text : '';
-        await this.store.writeSnapshot(key, baseline, { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
-        if (!firstRun) {
-          this.updateUnread(key, baseline, text);
+    return this.withLock(key, async () => {
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.size > this.config.maxFileSizeBytes) {
+          await this.store.remove(key);
+          return;
         }
-        return;
+        const entry = this.store.get(key);
+        if (entry && !entry.unread && entry.mtime === stat.mtime && entry.size === stat.size) {
+          return;
+        }
+        const text = await this.readCurrentText(uri);
+        if (!entry) {
+          // 初回は「既読」として取り込む。2 回目以降に見つかった新しいファイルは、全体を追加として扱う
+          const baseline = firstRun ? text : '';
+          await this.store.writeSnapshot(key, baseline, { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
+          if (!firstRun) {
+            this.updateUnread(key, baseline, text);
+          }
+          return;
+        }
+        const snapshot = await this.store.readSnapshot(key);
+        this.store.update(key, { mtime: stat.mtime, size: stat.size });
+        this.updateUnread(key, snapshot ?? '', text);
+        if (!this.store.get(key)?.unread) {
+          this.store.evict(key);
+        }
+      } catch (err) {
+        console.error('[markdown-unread-changes] scan failed', key, err);
       }
-      const snapshot = await this.store.readSnapshot(key);
-      this.store.update(key, { mtime: stat.mtime, size: stat.size });
-      this.updateUnread(key, snapshot ?? '', text);
-      if (!this.store.get(key)?.unread) {
-        this.store.evict(key);
-      }
-    } catch (err) {
-      console.error('[markdown-unread-changes] scan failed', key, err);
-    }
+    });
   }
 
   private isTarget(uri: vscode.Uri): boolean {
@@ -195,34 +247,41 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     return this.include.matches(rel) && !this.exclude.matches(rel);
   }
 
-  private async onDiskChanged(uri: vscode.Uri): Promise<void> {
+  private onDiskChanged(uri: vscode.Uri): Promise<void> {
     const key = uri.toString();
-    if (!this.isTarget(uri) || this.mode === 'starting') {
-      return;
+    if (!this.isTarget(uri)) {
+      return Promise.resolve();
     }
-    // 縮退中は、すでに追跡しているファイル（開いたことのあるファイル）だけを見る
-    if (this.mode === 'degraded' && !this.store.get(key)) {
-      return;
+    // 取り込み中は、まだ取り込んでいないファイルを「新しいファイル」と誤認しないよう、終わるまで待たせる
+    if (this.mode === 'starting' || this.mode === 'scanning') {
+      this.deferred.set(key, uri);
+      return Promise.resolve();
     }
-    try {
-      const stat = await vscode.workspace.fs.stat(uri);
-      if (stat.size > this.config.maxFileSizeBytes) {
-        await this.store.remove(key);
-        this.fire(key, false);
+    return this.withLock(key, async () => {
+      // 縮退中は、すでに追跡しているファイル（開いたことのあるファイル）だけを見る
+      if (this.mode === 'degraded' && !this.store.get(key)) {
         return;
       }
-      const text = await this.readCurrentText(uri);
-      if (!this.store.get(key)) {
-        // 新しく作られたファイル：全体を追加として扱う
-        await this.store.writeSnapshot(key, '', { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
-      } else {
-        this.store.update(key, { mtime: stat.mtime, size: stat.size });
+      try {
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (stat.size > this.config.maxFileSizeBytes) {
+          await this.store.remove(key);
+          this.fire(key, false);
+          return;
+        }
+        const text = await this.readCurrentText(uri);
+        if (!this.store.get(key)) {
+          // 新しく作られたファイル：全体を追加として扱う
+          await this.store.writeSnapshot(key, '', { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
+        } else {
+          this.store.update(key, { mtime: stat.mtime, size: stat.size });
+        }
+        const snapshot = (await this.store.readSnapshot(key)) ?? '';
+        this.updateUnread(key, snapshot, text);
+      } catch (err) {
+        console.error('[markdown-unread-changes] check failed', key, err);
       }
-      const snapshot = (await this.store.readSnapshot(key)) ?? '';
-      this.updateUnread(key, snapshot, text);
-    } catch (err) {
-      console.error('[markdown-unread-changes] check failed', key, err);
-    }
+    });
   }
 
   private async onDocumentOpened(doc: vscode.TextDocument): Promise<void> {
@@ -236,13 +295,18 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     }
     // 縮退中：初めて開いたファイルを「既読」として取り込む
     if (this.mode === 'degraded' && doc.getText().length <= this.config.maxFileSizeBytes) {
-      try {
-        const stat = await vscode.workspace.fs.stat(doc.uri);
-        await this.store.writeSnapshot(key, doc.getText(), { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
-        this.fire(key, false);
-      } catch {
-        // 保存されていないファイルなどは追跡しない
-      }
+      await this.withLock(key, async () => {
+        if (this.store.get(key)) {
+          return;
+        }
+        try {
+          const stat = await vscode.workspace.fs.stat(doc.uri);
+          await this.store.writeSnapshot(key, doc.getText(), { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
+          this.fire(key, false);
+        } catch {
+          // 保存されていないファイルなどは追跡しない
+        }
+      });
     }
   }
 
@@ -258,12 +322,14 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     }
     this.editTimers.set(
       key,
-      setTimeout(async () => {
+      setTimeout(() => {
         this.editTimers.delete(key);
-        const snapshot = await this.store.readSnapshot(key);
-        if (snapshot !== undefined) {
-          this.updateUnread(key, snapshot, doc.getText());
-        }
+        void this.withLock(key, async () => {
+          const snapshot = await this.store.readSnapshot(key);
+          if (snapshot !== undefined && this.store.get(key)) {
+            this.updateUnread(key, snapshot, doc.getText());
+          }
+        });
       }, 300),
     );
   }
@@ -276,8 +342,8 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     const unread = summary.total > 0;
     if (before && (before.unread !== unread || before.count !== summary.total)) {
       this.store.update(key, { unread, count: summary.total });
+      this.fire(key, false);
     }
-    this.fire(key, false);
   }
 
   private diff(key: string, oldText: string, newText: string): LineDiffResult {
@@ -323,11 +389,25 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
       return entry.unread ? { total: entry.count, modified: 0, added: 0, deleted: 0 } : undefined;
     }
     const summary = summarize(this.diff(uri, snapshot, doc.getText()));
+    // 記録された未読の状態が、色付けと同じ比較の結果と食い違っていたら直す
+    if (entry.unread !== summary.total > 0 || (entry.unread && entry.count !== summary.total)) {
+      void this.withLock(uri, async () => {
+        const current = this.store.cached(uri);
+        if (current !== undefined && this.store.get(uri)) {
+          this.updateUnread(uri, current, doc.getText());
+        }
+      });
+    }
     return summary.total > 0 ? summary : undefined;
   }
 
   isTracked(uri: string): boolean {
     return this.store.get(uri) !== undefined;
+  }
+
+  /** 追跡しているファイルの URI 文字列 */
+  trackedFiles(): string[] {
+    return this.store.keys();
   }
 
   unreadFiles(): { uri: string; count: number }[] {
@@ -353,16 +433,18 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
 
   // ---- 既読にする ----
 
-  async markRead(uri: vscode.Uri): Promise<void> {
+  markRead(uri: vscode.Uri): Promise<void> {
     const key = uri.toString();
-    if (!this.store.get(key)) {
-      return;
-    }
-    const text = await this.readCurrentText(uri);
-    const stat = await vscode.workspace.fs.stat(uri);
-    await this.store.writeSnapshot(key, text, { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
-    this.diffCache.delete(key);
-    this.fire(key, true);
+    return this.withLock(key, async () => {
+      if (!this.store.get(key)) {
+        return;
+      }
+      const text = await this.readCurrentText(uri);
+      const stat = await vscode.workspace.fs.stat(uri);
+      await this.store.writeSnapshot(key, text, { mtime: stat.mtime, size: stat.size, unread: false, count: 0 });
+      this.diffCache.delete(key);
+      this.fire(key, true);
+    });
   }
 
   async markAllRead(): Promise<void> {

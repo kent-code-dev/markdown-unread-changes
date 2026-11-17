@@ -1,16 +1,18 @@
 // ステータスバーに変更箇所の数・未読ファイルの数を表示する（ノート「ステータスバーの件数」）
 import * as vscode from 'vscode';
 import type { Tracker } from '../tracker/tracker.ts';
+import { resolvePreviewTarget } from './previewTarget.ts';
 
 export const COMMAND_MARK_AS_READ = 'markdownUnreadChanges.markAsRead';
 export const COMMAND_SHOW_UNREAD = 'markdownUnreadChanges.showUnreadFiles';
+const RECENT_LIMIT = 20;
 
 export class StatusBarController implements vscode.Disposable {
   private readonly item: vscode.StatusBarItem;
   private readonly tracker: Tracker;
   private readonly disposables: vscode.Disposable[] = [];
-  /** プレビューにフォーカスがあるとき用に、最後に表示していた Markdown ファイルを覚えておく */
-  private lastMarkdownUri: vscode.Uri | undefined;
+  /** 最近表示した・開いた Markdown ファイル（URI 文字列。新しい順） */
+  private recent: string[] = [];
 
   constructor(tracker: Tracker) {
     this.tracker = tracker;
@@ -30,18 +32,44 @@ export class StatusBarController implements vscode.Disposable {
     this.disposables.forEach((d) => d.dispose());
   }
 
-  /** 表示中の Markdown ファイル。プレビューにフォーカスがあるときは、直前に表示していたファイル */
+  /** 最近表示した・開いた Markdown ファイルを覚える（同じファイル名の候補が複数あるときに優先する） */
+  rememberOpened(uri: vscode.Uri): void {
+    const key = uri.toString();
+    this.recent = [key, ...this.recent.filter((r) => r !== key)].slice(0, RECENT_LIMIT);
+  }
+
+  /**
+   * 表示中の Markdown ファイル。プレビューにフォーカスがあるときは、タブの題名から表示中のファイルを推定する。
+   * 特定できなければ undefined（別のファイルを誤って既読にしないため）
+   */
   activeMarkdownUri(): vscode.Uri | undefined {
     const editor = vscode.window.activeTextEditor;
     if (editor && editor.document.languageId === 'markdown') {
-      this.lastMarkdownUri = editor.document.uri;
+      this.rememberOpened(editor.document.uri);
       return editor.document.uri;
     }
-    const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-    if (input instanceof vscode.TabInputWebview && input.viewType.includes('markdown.preview')) {
-      return this.lastMarkdownUri;
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    if (tab && tab.input instanceof vscode.TabInputWebview && tab.input.viewType.includes('markdown.preview')) {
+      const candidates = [
+        ...this.tracker.trackedFiles(),
+        ...vscode.workspace.textDocuments.filter((d) => d.languageId === 'markdown').map((d) => d.uri.toString()),
+      ];
+      const target = resolvePreviewTarget(tab.label, candidates, this.recent);
+      return target ? vscode.Uri.parse(target) : undefined;
     }
     return undefined;
+  }
+
+  /** プレビューにフォーカスがあるが、表示中のファイルを特定できないか */
+  private isUnresolvedPreview(): boolean {
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    return (
+      !vscode.window.activeTextEditor &&
+      !!tab &&
+      tab.input instanceof vscode.TabInputWebview &&
+      tab.input.viewType.includes('markdown.preview') &&
+      this.activeMarkdownUri() === undefined
+    );
   }
 
   update(): void {
@@ -79,7 +107,12 @@ export class StatusBarController implements vscode.Disposable {
       this.item.command = { command: COMMAND_MARK_AS_READ, title: '既読にする', arguments: [active] };
     } else if (unread.length > 0) {
       this.item.text = `${warn}$(files) 未読 ${unread.length}ファイル`;
-      this.item.tooltip = 'クリックで未読のファイルの一覧を開く' + degradedNote;
+      this.item.tooltip =
+        'クリックで未読のファイルの一覧を開く' +
+        (this.isUnresolvedPreview()
+          ? '\n\nこのプレビューのファイルを特定できませんでした（同じ名前のファイルが複数あるなど）。エディタで表示すると既読にできます。'
+          : '') +
+        degradedNote;
       this.item.command = COMMAND_SHOW_UNREAD;
     } else {
       this.item.text = `${warn}$(check) 未読なし`;

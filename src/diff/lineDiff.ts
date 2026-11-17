@@ -11,11 +11,84 @@ export interface Deletion {
   /** 旧テキストでの開始行 */
   oldStart: number;
   oldLines: string[];
-  /**
-   * 変更（削除と追加が隣り合う）の一部として削除された行の場合、対応づける現在の行。
-   * 純粋な削除なら undefined
-   */
-  attachTo?: number;
+}
+
+/** これ以上似ている行どうしだけを「変更」として対応づける（0〜1） */
+export const SIMILARITY_THRESHOLD = 0.5;
+/** 対応づけの計算量の上限（削除行数 × 追加行数）。超えたら先頭から順に対応づける */
+const MAX_PAIRING_CELLS = 40000;
+
+/**
+ * 行数の違う削除行と追加行を、順序を保ったまま、似ている行どうしで対応づける。
+ * 戻り値は [削除行の位置, 追加行の位置] の組（削除行の位置の昇順）
+ */
+export function pairBySimilarity(deleted: readonly string[], inserted: readonly string[]): (readonly [number, number])[] {
+  const d = deleted.length;
+  const a = inserted.length;
+  if (d === 0 || a === 0) {
+    return [];
+  }
+  if (d * a > MAX_PAIRING_CELLS) {
+    return Array.from({ length: Math.min(d, a) }, (_, p) => [p, p] as const);
+  }
+
+  // dp[i][j] = 削除行 i 個・追加行 j 個までで得られる類似度の合計の最大値
+  const score: number[][] = deleted.map((x) => inserted.map((y) => similarity(x, y)));
+  const dp: number[][] = Array.from({ length: d + 1 }, () => new Array<number>(a + 1).fill(0));
+  for (let i = 1; i <= d; i++) {
+    for (let j = 1; j <= a; j++) {
+      const s = score[i - 1][j - 1];
+      const diag = s >= SIMILARITY_THRESHOLD ? dp[i - 1][j - 1] + s : -Infinity;
+      dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1], diag);
+    }
+  }
+
+  const pairs: (readonly [number, number])[] = [];
+  let i = d;
+  let j = a;
+  while (i > 0 && j > 0) {
+    const s = score[i - 1][j - 1];
+    if (s >= SIMILARITY_THRESHOLD && dp[i][j] === dp[i - 1][j - 1] + s) {
+      pairs.push([i - 1, j - 1]);
+      i--;
+      j--;
+    } else if (dp[i][j] === dp[i - 1][j]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  return pairs.reverse();
+}
+
+/** 2 行の似ている度合い（文字の 2-gram の Dice 係数。空白は無視する） */
+export function similarity(x: string, y: string): number {
+  const a = x.replace(/\s+/g, '');
+  const b = y.replace(/\s+/g, '');
+  if (a === b) {
+    return 1;
+  }
+  if (a.length === 0 || b.length === 0) {
+    return 0;
+  }
+  if (a.length === 1 || b.length === 1) {
+    return a.includes(b) || b.includes(a) ? 2 / (a.length + b.length) : 0;
+  }
+  const grams = new Map<string, number>();
+  for (let k = 0; k < a.length - 1; k++) {
+    const g = a.slice(k, k + 2);
+    grams.set(g, (grams.get(g) ?? 0) + 1);
+  }
+  let common = 0;
+  for (let k = 0; k < b.length - 1; k++) {
+    const g = b.slice(k, k + 2);
+    const n = grams.get(g) ?? 0;
+    if (n > 0) {
+      common++;
+      grams.set(g, n - 1);
+    }
+  }
+  return (2 * common) / (a.length - 1 + (b.length - 1));
 }
 
 /** 連続した変更のまとまり（ステータスバーで 1 件と数える単位） */
@@ -39,14 +112,17 @@ export interface LineDiffResult {
   isEmpty: boolean;
 }
 
+/** 行に分ける。改行コード（CRLF / LF / CR）の違いと先頭の BOM は変更として扱わない */
 export function splitLines(text: string): string[] {
-  return text.split(/\r?\n/);
+  return text.replace(/^﻿/, '').split(/\r\n|\r|\n/);
 }
 
 export function computeLineDiff(oldText: string, newText: string): LineDiffResult {
   const oldLines = splitLines(oldText);
   const newLines = splitLines(newText);
-  const ops = diffLines(oldLines.map(normalizeLineForCompare), newLines.map(normalizeLineForCompare));
+  const oldNorm = oldLines.map(normalizeLineForCompare);
+  const newNorm = newLines.map(normalizeLineForCompare);
+  const ops = diffLines(oldNorm, newNorm);
 
   const status: LineStatus[] = new Array(newLines.length).fill('unchanged');
   const oldIndexOf: (number | undefined)[] = new Array(newLines.length).fill(undefined);
@@ -74,26 +150,54 @@ export function computeLineDiff(oldText: string, newText: string): LineDiffResul
       i++;
     }
     const anchor = inserted.length > 0 ? inserted[0] : nextNewIndex(ops, i, newLines.length);
-    const paired = Math.min(deleted.length, inserted.length);
+    const hunkEnd = inserted.length > 0 ? inserted[inserted.length - 1] + 1 : anchor;
 
-    // 隣り合う削除と追加は、先頭から順に「変更」として対応づける
-    for (let p = 0; p < paired; p++) {
-      status[inserted[p]] = 'modified';
-      oldIndexOf[inserted[p]] = deleted[p];
+    // 隣り合う削除と追加を「変更」として対応づける。
+    // 行数が同じなら先頭から順に、違うなら似ている行どうしを対応づける
+    const pairs =
+      deleted.length === inserted.length
+        ? deleted.map((_, p) => [p, p] as const)
+        : pairBySimilarity(
+            deleted.map((idx) => oldNorm[idx]),
+            inserted.map((idx) => newNorm[idx]),
+          );
+    for (const [dp, ip] of pairs) {
+      status[inserted[ip]] = 'modified';
+      oldIndexOf[inserted[ip]] = deleted[dp];
     }
-    for (let p = paired; p < inserted.length; p++) {
-      status[inserted[p]] = 'added';
+    const pairedInserts = new Set(pairs.map(([, ip]) => ip));
+    inserted.forEach((idx, ip) => {
+      if (!pairedInserts.has(ip)) {
+        status[idx] = 'added';
+      }
+    });
+
+    // 対応づかなかった削除行は、連続するまとまりごとに「削除（赤）」として残す
+    const pairedDeletes = new Set(pairs.map(([dp]) => dp));
+    let run: number[] = [];
+    const flushRun = (nextInsert: number) => {
+      if (run.length > 0) {
+        deletions.push({
+          anchor: nextInsert < inserted.length ? inserted[nextInsert] : hunkEnd,
+          oldStart: deleted[run[0]],
+          oldLines: run.map((dp) => oldLines[deleted[dp]]),
+        });
+        run = [];
+      }
+    };
+    // 削除行の直後に来る追加行の位置（対応づいた組の追加行より前に置く）
+    let pairIndex = 0;
+    let prevInsert = -1;
+    for (let dp = 0; dp < deleted.length; dp++) {
+      if (pairedDeletes.has(dp)) {
+        flushRun(prevInsert + 1);
+        prevInsert = pairs[pairIndex][1];
+        pairIndex++;
+      } else {
+        run.push(dp);
+      }
     }
-    if (deleted.length > paired) {
-      const rest = deleted.slice(paired);
-      const lastNew = inserted.length > 0 ? inserted[inserted.length - 1] : undefined;
-      deletions.push({
-        anchor: lastNew !== undefined ? lastNew + 1 : anchor,
-        oldStart: rest[0],
-        oldLines: rest.map((idx) => oldLines[idx]),
-        attachTo: lastNew,
-      });
-    }
+    flushRun(prevInsert + 1);
 
     const newStart = inserted.length > 0 ? inserted[0] : anchor;
     const newEnd = inserted.length > 0 ? inserted[inserted.length - 1] + 1 : anchor;

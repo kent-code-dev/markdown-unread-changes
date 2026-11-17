@@ -56,6 +56,7 @@ export function annotateTokens(
 
   const leaves = findLeafBlocks(tokens);
   const tables = findChangedTables(tokens, diff, labels);
+  // 色付けを別の形で示すため、赤のブロックとしては出さない削除
   const consumed = new Set<Deletion>();
 
   // 各ブロックの色と変更前のテキストを決める
@@ -65,7 +66,7 @@ export function annotateTokens(
     if (tables.some((t) => leaf.first > t.first && leaf.last < t.last)) {
       continue; // 構造が変わった表の中は、表全体の枠で示す
     }
-    const coloring = colorLeaf(leaf, diff, consumed);
+    const coloring = colorLeaf(leaf, diff);
     if (coloring) {
       leafAt.set(leaf.first, { leaf, coloring });
       if (!leaf.isRow) {
@@ -161,13 +162,16 @@ function findLeafBlocks(tokens: readonly Token[]): LeafBlock[] {
   return leaves;
 }
 
-function colorLeaf(leaf: LeafBlock, diff: LineDiffResult, consumed: Set<Deletion>): Coloring | undefined {
+/**
+ * ブロックの色と変更前のテキストを決める。
+ * ブロックの途中で削除された行は、変更前のテキストには含めるが、赤のブロックとしても別に表示する
+ * （開かなくても行が消えたことが分かるように）
+ */
+function colorLeaf(leaf: LeafBlock, diff: LineDiffResult): Coloring | undefined {
   const { lineStart: s, lineEnd: e } = leaf;
-  const attached = diff.deletions.filter((d) =>
-    d.attachTo !== undefined ? d.attachTo >= s && d.attachTo < e : d.anchor > s && d.anchor < e,
-  );
-  let anyChanged = attached.length > 0;
-  let allAdded = attached.length === 0;
+  const inner = diff.deletions.filter((d) => d.anchor > s && d.anchor < e);
+  let anyChanged = false;
+  let allAdded = true;
   let anyNonBlank = false;
   for (let k = s; k < e && k < diff.status.length; k++) {
     const st = diff.status[k];
@@ -184,7 +188,6 @@ function colorLeaf(leaf: LeafBlock, diff: LineDiffResult, consumed: Set<Deletion
   if (!anyChanged) {
     return undefined;
   }
-  attached.forEach((d) => consumed.add(d));
   if (allAdded && anyNonBlank) {
     return { kind: 'added' };
   }
@@ -192,19 +195,14 @@ function colorLeaf(leaf: LeafBlock, diff: LineDiffResult, consumed: Set<Deletion
   // 変更前のブロックを組み立てる
   const old: string[] = [];
   for (let k = s; k < e && k < diff.status.length; k++) {
-    for (const d of attached) {
-      if (d.attachTo === undefined && d.anchor === k) {
+    for (const d of inner) {
+      if (d.anchor === k) {
         old.push(...d.oldLines);
       }
     }
     const oi = diff.oldIndexOf[k];
     if (oi !== undefined) {
       old.push(diff.oldLines[oi]);
-    }
-    for (const d of attached) {
-      if (d.attachTo === k) {
-        old.push(...d.oldLines);
-      }
     }
   }
   return { kind: 'modified', oldText: old.join('\n') };

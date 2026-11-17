@@ -87,6 +87,19 @@
           "default": 1024,
           "minimum": 1,
           "markdownDescription": "Files larger than this size (in KB) are not tracked."
+        },
+        "markdownUnreadChanges.openUnreadFileIn": {
+          "type": "string",
+          "enum": [
+            "preview",
+            "editor"
+          ],
+          "enumDescriptions": [
+            "Open in the Markdown preview so the changes are highlighted. If a preview of the file is already open, it is brought to the front.",
+            "Open in the text editor."
+          ],
+          "default": "preview",
+          "markdownDescription": "Where to open a file picked from the unread file list."
         }
       }
     }
@@ -96,7 +109,7 @@
     "watch": "node esbuild.mjs --watch",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "test": "node --test \"test/**/*.test.mts\"",
+    "test": "node --import ./test/setup/register.mjs --test \"test/**/*.test.mts\"",
     "check": "npm run typecheck && npm run lint && npm test && npm run check:deps",
     "check:deps": "npm ls --omit=dev --all",
     "vscode:prepublish": "npm run check && node esbuild.mjs --production"

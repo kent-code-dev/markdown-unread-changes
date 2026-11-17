@@ -14,7 +14,7 @@ Useful when an AI assistant (or a teammate) rewrites your notes and you want to 
 - **Tables**: only the changed rows are colored. Column or alignment changes mark the whole table.
 - **Status bar**
   - `変更 3件` (3 changes): the number of change locations in the current file. Click to mark the file as read.
-  - `未読 2ファイル` (2 unread files): click to pick an unread file to open.
+  - `未読 2ファイル` (2 unread files): click to pick an unread file. It opens in the Markdown preview by default.
   - `未読なし`: nothing unread.
 - **Commands**: `Mark Current File as Read`, `Mark All Files as Read`, `Show Unread Files`.
 
@@ -28,6 +28,7 @@ On first start, every Markdown file in the workspace is imported as "read". Afte
 | `markdownUnreadChanges.exclude` | `node_modules`, `.git`, `dist`, `out`, `build`, `vendor` | Glob patterns to exclude (`files.exclude` is applied too) |
 | `markdownUnreadChanges.maxFiles` | `2000` | When exceeded, only files you open are tracked |
 | `markdownUnreadChanges.maxFileSize` | `1024` (KB) | Larger files are not tracked |
+| `markdownUnreadChanges.openUnreadFileIn` | `preview` | Where to open a file picked from the unread list: `preview` (brings an existing preview of the file to the front) or `editor` |
 
 ## Privacy
 

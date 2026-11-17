@@ -86,3 +86,38 @@ test('対象のファイルが分からないときは色を付けない', () =>
   createMarkdownItPlugin({ getDiffForRender: () => computeLineDiff('a', 'b') }, labels)(md);
   assert.doesNotMatch(md.render('b'), /muc-/);
 });
+
+// ---- 行数の違う変更での削除の表示 ----
+
+test('削除 2 行・追加 1 行：黄色の段落の前に、消えた行を赤で表示する', () => {
+  const oldText = ['見出し前の段落', '', '東京は晴れ', '大阪は曇り'].join('\n');
+  const newText = ['見出し前の段落', '', '大阪は曇りのち雨'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /<div class="muc-block muc-deleted">東京は晴れ<\/div>/);
+  assert.match(html, /<div class="muc-block muc-modified" data-muc-old="大阪は曇り"><p>大阪は曇りのち雨<\/p>/);
+  assert.ok(html.indexOf('muc-deleted') < html.indexOf('muc-modified'));
+});
+
+test('リスト項目の削除と変更：消えた項目を赤で表示する', () => {
+  const oldText = ['- 項目1: りんご', '- 項目2: みかん', '- 項目3: もも'].join('\n');
+  const newText = ['- 項目2: みかんとバナナ', '- 項目3: もも'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /muc-deleted">- 項目1: りんご</);
+  assert.match(html, /muc-modified" data-muc-old="- 項目2: みかん"/);
+});
+
+test('段落の途中の行が消えたら、黄色に吸収せず赤で表示する', () => {
+  const oldText = ['1行目はそのまま', '2行目は消える', '3行目もそのまま'].join('\n');
+  const newText = ['1行目はそのまま', '3行目もそのまま'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /<div class="muc-block muc-deleted">2行目は消える<\/div>/);
+  assert.doesNotMatch(html, /muc-modified/);
+});
+
+test('変更した段落の途中で消えた行は、変更前のテキストにも含める', () => {
+  const oldText = ['1行目はそのまま', '2行目は消える', '3行目を書き換える'].join('\n');
+  const newText = ['1行目はそのまま', '3行目を書き換えた'].join('\n');
+  const html = render(oldText, newText);
+  assert.match(html, /data-muc-old="1行目はそのまま\n2行目は消える\n3行目を書き換える"/);
+  assert.match(html, /muc-deleted">2行目は消える</);
+});

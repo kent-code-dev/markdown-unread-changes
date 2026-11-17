@@ -5,6 +5,7 @@ import type { RenderDiffProvider } from './preview/markdownItPlugin.ts';
 import { SnapshotStore } from './tracker/snapshotStore.ts';
 import { Tracker } from './tracker/tracker.ts';
 import { COMMAND_MARK_AS_READ, COMMAND_SHOW_UNREAD, StatusBarController } from './ui/statusBar.ts';
+import { openUnreadFile } from './ui/openFile.ts';
 
 const COMMAND_MARK_ALL_AS_READ = 'markdownUnreadChanges.markAllAsRead';
 
@@ -39,9 +40,17 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerCommand(COMMAND_MARK_AS_READ, async (uri?: vscode.Uri) => {
         const target = uri instanceof vscode.Uri ? uri : statusBar.activeMarkdownUri();
-        if (target) {
-          await t.markRead(target);
+        if (!target) {
+          void vscode.window.showInformationMessage(
+            '既読にする Markdown ファイルを特定できませんでした。ファイルをエディタで表示してから実行してください。',
+          );
+          return;
         }
+        if (!t.isTracked(target.toString())) {
+          void vscode.window.showInformationMessage('このファイルは追跡の対象外です（設定の include / exclude を確認してください）。');
+          return;
+        }
+        await t.markRead(target);
       }),
       vscode.commands.registerCommand(COMMAND_MARK_ALL_AS_READ, async () => {
         const count = t.unreadFiles().length;
@@ -74,7 +83,9 @@ export function activate(context: vscode.ExtensionContext) {
         }
         const picked = await vscode.window.showQuickPick(items, { placeHolder: '開く未読のファイルを選択' });
         if (picked) {
-          await vscode.window.showTextDocument(picked.uri);
+          // 初期値はプレビュー（色が見えるように）。設定でエディタも選べる
+          statusBar.rememberOpened(picked.uri);
+          await openUnreadFile(picked.uri);
         }
       }),
     );
