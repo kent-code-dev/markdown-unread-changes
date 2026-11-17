@@ -102,6 +102,7 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     this.disposables.forEach((d) => d.dispose());
     this.editTimers.forEach((t) => clearTimeout(t));
     this.onDidChangeEmitter.dispose();
+    this.store.dispose();
     void this.store.flush();
   }
 
@@ -273,11 +274,67 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
     }
   }
 
-  /** ファイルの記録を消す（ファイルが消えた、対象外になったなど） */
+  /**
+   * ファイルの記録を外す（ファイルが消えた、対象外になったなど）。
+   * VS Code の外での名前変更に備えて、記録はしばらく「削除された記録」として残る
+   */
   private async forget(key: string): Promise<void> {
     this.diffCache.delete(key);
-    await this.store.remove(key);
+    this.store.detach(key);
     this.fire(key, false);
+  }
+
+  /**
+   * 新しく見つかったファイルが、消えたファイルを VS Code の外で名前変更・移動したものなら、記録を引き継ぐ。
+   * VS Code の外での名前変更（Windows のエクスプローラー、Git、別のウィンドウなど）は onWillRenameFiles が届かず、
+   * ファイル監視の「作成」と「削除」だけが届く。順番も決まっておらず、実機では「作成」が先に届く。
+   * 名前変更では更新日時とサイズが変わらないので、次のどちらかを同じファイルとみなす。
+   * - 同じ場所の、削除されてから期限内の記録（削除して作り直す保存のしかた）
+   * - 更新日時とサイズが一致し、元のファイルがもう無い記録（今の記録、または削除されてから期限内の記録）。候補が 1 つのときだけ
+   */
+  private async adoptMovedRecord(key: string, uri: vscode.Uri, stat: vscode.FileStat): Promise<boolean> {
+    let from: string | undefined;
+    if (this.store.removedRecords().some((r) => r.key === key)) {
+      from = key;
+    } else {
+      const same = (e: { mtime: number; size: number }) => e.mtime === stat.mtime && e.size === stat.size;
+      const candidates = this.store
+        .removedRecords()
+        .filter((r) => same(r.entry))
+        .map((r) => r.key);
+      for (const k of this.store.keys()) {
+        const e = this.store.get(k);
+        if (k !== key && e && same(e) && (await this.isMissing(vscode.Uri.parse(k)))) {
+          candidates.push(k);
+        }
+      }
+      if (candidates.length !== 1) {
+        return false;
+      }
+      from = candidates[0];
+    }
+    const entry = this.store.get(from) ?? this.store.removedRecords().find((r) => r.key === from)?.entry;
+    // スナップショットが読めないとき：既読で、更新日時とサイズが同じなら、今の内容が既読時点の内容
+    const fallback = async () =>
+      entry && !entry.unread && entry.mtime === stat.mtime && entry.size === stat.size ? this.readCurrentText(uri) : undefined;
+    if (!(await this.store.moveRecord(from, key, fallback))) {
+      return false;
+    }
+    this.diffCache.delete(from);
+    if (from !== key) {
+      this.fire(from, false);
+    }
+    this.fire(key, true);
+    return true;
+  }
+
+  private async isMissing(uri: vscode.Uri): Promise<boolean> {
+    try {
+      await vscode.workspace.fs.stat(uri);
+      return false;
+    } catch (err) {
+      return isNotFound(err);
+    }
   }
 
   /** VS Code の中での名前変更の予定を覚える（フォルダの名前変更なら、その下のファイルもすべて） */
@@ -324,7 +381,15 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
               }
               this.diffCache.delete(oldKey);
               this.diffCache.delete(newKey);
-              await this.store.rename(oldKey, newKey);
+              // スナップショットが読めないとき：既読で、更新日時とサイズが変わっていなければ、今の内容が既読時点の内容
+              const entry = this.store.get(oldKey);
+              const fallback = async () => {
+                const stat = await vscode.workspace.fs.stat(target);
+                return entry && !entry.unread && stat.mtime === entry.mtime && stat.size === entry.size
+                  ? this.readCurrentText(target)
+                  : undefined;
+              };
+              await this.store.moveRecord(oldKey, newKey, fallback);
               this.fire(oldKey, false);
               this.fire(newKey, true);
             } catch (err) {
@@ -355,8 +420,13 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
           await this.store.remove(key);
           return;
         }
-        const entry = this.store.get(key);
+        let entry = this.store.get(key);
+        // 閉じている間に VS Code の外で名前を変えた・移動したファイルなら、記録を引き継ぐ
+        if (!entry && !newFileAsRead && (await this.adoptMovedRecord(key, uri, stat))) {
+          entry = this.store.get(key);
+        }
         if (entry && !entry.unread && entry.mtime === stat.mtime && entry.size === stat.size) {
+          this.evictIfClosed(key);
           return;
         }
         const text = await this.readCurrentText(uri);
@@ -420,6 +490,10 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
           await this.store.remove(key);
           this.fire(key, false);
           return;
+        }
+        // VS Code の外で名前を変えた・移動したファイルなら、記録を引き継ぐ
+        if (!this.store.get(key)) {
+          await this.adoptMovedRecord(key, uri, stat);
         }
         const text = await this.readCurrentText(uri);
         if (!this.store.get(key)) {

@@ -83,6 +83,8 @@ export const fake = {
     this.config = {};
     this.userConfig = {};
     this.trusted = true;
+    this.willRename = new EventEmitter();
+    this.didRename = new EventEmitter();
   },
   writeFile(path: string, text: string): void {
     this.files.set(path, { data: enc.encode(text), mtime: ++clock });
@@ -91,6 +93,24 @@ export const fake = {
   fireChange(path: string): void {
     this.watchers.forEach((w) => w.change.fire(Uri.file(path)));
   },
+  fireCreate(path: string): void {
+    this.watchers.forEach((w) => w.create.fire(Uri.file(path)));
+  },
+  fireDelete(path: string): void {
+    this.watchers.forEach((w) => w.del.fire(Uri.file(path)));
+  },
+  /** ファイルやフォルダの名前を変える（実際の名前変更と同じく、更新日時は変えない）。通知は送らない */
+  moveFile(oldPath: string, newPath: string): void {
+    for (const [path, file] of [...this.files]) {
+      if (path === oldPath || path.startsWith(oldPath + '/')) {
+        this.files.delete(path);
+        this.files.set(newPath + path.slice(oldPath.length), file);
+      }
+    }
+  },
+  /** VS Code の中での名前変更の通知（onWillRenameFiles / onDidRenameFiles） */
+  willRename: new EventEmitter<{ files: { oldUri: Uri; newUri: Uri }[] }>(),
+  didRename: new EventEmitter<{ files: { oldUri: Uri; newUri: Uri }[] }>(),
 };
 
 class FakeWatcher {
@@ -129,6 +149,12 @@ export const workspace = {
       fake.files.set(uri.path, { data, mtime: ++clock });
     },
     async createDirectory() {},
+    async readDirectory(uri: Uri) {
+      const prefix = uri.path.replace(/\/$/, '') + '/';
+      return [...fake.files.keys()]
+        .filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/'))
+        .map((p) => [p.slice(prefix.length), 1] as [string, number]);
+    },
     async delete(uri: Uri) {
       fake.files.delete(uri.path);
     },
@@ -180,8 +206,12 @@ export const workspace = {
   onDidCloseTextDocument: noopEvent,
   onDidChangeConfiguration: noopEvent,
   onDidGrantWorkspaceTrust: noopEvent,
-  onWillRenameFiles: noopEvent,
-  onDidRenameFiles: noopEvent,
+  onWillRenameFiles(listener: (e: { files: { oldUri: Uri; newUri: Uri }[] }) => unknown) {
+    return fake.willRename.event(listener);
+  },
+  onDidRenameFiles(listener: (e: { files: { oldUri: Uri; newUri: Uri }[] }) => unknown) {
+    return fake.didRename.event(listener);
+  },
 };
 
 export const window = {
