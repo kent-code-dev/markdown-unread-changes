@@ -66,7 +66,12 @@ export const fake = {
   workspaceRoot: '/ws',
   watchers: [] as FakeWatcher[],
   textDocuments: [] as { uri: Uri; languageId: string; getText(): string }[],
+  /** フォルダ側（ワークスペース）の設定。キーは「セクション.名前」 */
   config: {} as Record<string, unknown>,
+  /** ユーザー設定。キーは「セクション.名前」 */
+  userConfig: {} as Record<string, unknown>,
+  /** ワークスペースを信頼しているか（false なら制限モード） */
+  trusted: true,
 
   reset(): void {
     this.files.clear();
@@ -74,6 +79,8 @@ export const fake = {
     this.watchers = [];
     this.textDocuments = [];
     this.config = {};
+    this.userConfig = {};
+    this.trusted = true;
   },
   writeFile(path: string, text: string): void {
     this.files.set(path, { data: enc.encode(text), mtime: ++clock });
@@ -138,10 +145,24 @@ export const workspace = {
     fake.watchers.push(w);
     return w;
   },
-  getConfiguration() {
+  get isTrusted() {
+    return fake.trusted;
+  },
+  // 実際の VS Code と同じく、get はフォルダ側の値を優先する（制限モードでの無視は拡張側で行う）
+  getConfiguration(section: string) {
+    const full = (key: string) => `${section}.${key}`;
     return {
       get<T>(key: string, defaultValue?: T): T {
-        return (key in fake.config ? fake.config[key] : defaultValue) as T;
+        const k = full(key);
+        return (k in fake.config ? fake.config[k] : k in fake.userConfig ? fake.userConfig[k] : defaultValue) as T;
+      },
+      inspect<T>(key: string) {
+        const k = full(key);
+        return {
+          key: k,
+          globalValue: fake.userConfig[k] as T | undefined,
+          workspaceValue: fake.config[k] as T | undefined,
+        };
       },
     };
   },
@@ -156,6 +177,7 @@ export const workspace = {
   onDidOpenTextDocument: noopEvent,
   onDidCloseTextDocument: noopEvent,
   onDidChangeConfiguration: noopEvent,
+  onDidGrantWorkspaceTrust: noopEvent,
 };
 
 export const window = {

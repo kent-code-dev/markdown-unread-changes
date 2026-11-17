@@ -1,12 +1,13 @@
 // 未読ファイルの一覧で選んだファイルを開く（設定に応じてプレビューかエディタで）
 import * as vscode from 'vscode';
-import { CONFIG_SECTION } from '../config.ts';
+import { CONFIG_SECTION, readSetting } from '../config.ts';
 import { isMarkdownPreviewTab, previewLabelMatches } from './previewTarget.ts';
 
 export type OpenTarget = 'preview' | 'editor';
 
 export function readOpenTarget(): OpenTarget {
-  const value = vscode.workspace.getConfiguration(CONFIG_SECTION).get<string>('openUnreadFileIn', 'preview');
+  // 制限モードではフォルダ側の設定を無視する
+  const value = readSetting<string>(CONFIG_SECTION, 'openUnreadFileIn', 'preview');
   return value === 'editor' ? 'editor' : 'preview';
 }
 

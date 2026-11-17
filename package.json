@@ -24,6 +24,19 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "制限モードでは、フォルダ側の設定（include・exclude・maxFiles・maxFileSize・openUnreadFileIn、files.exclude）を無視し、ユーザー設定と初期値で動作します。",
+      "restrictedConfigurations": [
+        "markdownUnreadChanges.include",
+        "markdownUnreadChanges.exclude",
+        "markdownUnreadChanges.maxFiles",
+        "markdownUnreadChanges.maxFileSize",
+        "markdownUnreadChanges.openUnreadFileIn"
+      ]
+    }
+  },
   "contributes": {
     "markdown.markdownItPlugins": true,
     "markdown.previewStyles": [

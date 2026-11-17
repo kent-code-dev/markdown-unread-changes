@@ -224,3 +224,11 @@
 - 原因：この形のプレビューは Webview ではなくカスタムエディタ（`TabInputCustom`、viewType `vscode.markdown.preview.editor`）として開く。プレビューの判定が Webview のタブだけを見ていた
 - 修正：カスタムエディタのタブは表示中のファイルの URI を持っているので、題名からの推定ではなく URI で判定する（同じファイル名が複数あっても正確）。未読一覧から開くときに既存のプレビューを探す処理も同様に対応した
 - テスト：`test/previewTarget.test.mts` にタブの種類ごとの判定を追加
+
+### 対応の記録：制限モード（信頼していないフォルダ）への対応（2026-11-17）
+- `package.json` の `capabilities.untrustedWorkspaces` を `supported: "limited"` にした。未宣言だと、制限モードでは拡張機能ごと無効になり、色付けもステータスバーも動かない
+- `restrictedConfigurations` に include / exclude / maxFiles / maxFileSize / openUnreadFileIn を指定した（VS Code 側でもフォルダ側の値を無視する）
+- 拡張側でも、制限モードでは `inspect()` のユーザー設定と初期値だけを使う（`src/config.ts` の `readSetting`）。`files.exclude` は VS Code 本体の設定で `restrictedConfigurations` に入れられないため、この処理で無視する
+- フォルダを信頼したら（`onDidGrantWorkspaceTrust`）取り込み直す
+- 制限モードで Markdown プレビューは CSP が厳格になるが、拡張機能が同梱する previewScripts / previewStyles は読み込まれる想定。実機での確認が必要
+- テスト：`test/config.test.mts`

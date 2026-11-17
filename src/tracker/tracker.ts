@@ -66,6 +66,8 @@ export class Tracker implements RenderDiffProvider, vscode.Disposable {
           void this.rescan();
         }
       }),
+      // 制限モードを解除したら、フォルダ側の設定を反映して取り込み直す
+      vscode.workspace.onDidGrantWorkspaceTrust(() => void this.rescan()),
     );
     await this.rescan();
   }
